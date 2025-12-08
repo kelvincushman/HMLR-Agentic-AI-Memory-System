@@ -48,12 +48,51 @@ def _get_base_url(self) -> str:
   return "http://localhost:8000/v1"
   ```
 - **OpenAI-compatible APIs:** Point to alternative providers (e.g., OpenRouter, Together.ai)
+- **Other LLMs via proxy:** Use Gemini Pro, Claude, Llama 3, etc. through an OpenAI-compatible wrapper
 
-**⚠️ Important:** 
-- The endpoint must be OpenAI API-compatible (same request/response format)
-- You still need a valid API key for the endpoint
-- HMLR has only been tested with official OpenAI endpoints
-- Model names must match what your endpoint supports
+**💡 Key Insight: HMLR is the MEMORY, not the LLM**
+
+HMLR's job is to:
+1. **Retrieve** the right memories (facts, bridge blocks, context)
+2. **Build** the prompt with all relevant context
+3. **Send** that prompt to whatever LLM endpoint you configure
+4. **Store** the response back into memory
+
+You can use **any LLM** you want! Examples:
+- **Gemini Pro models** for stronger reasoning
+- **Claude Pro models** for better writing
+- **Llama** for local/private deployment
+- **GPT Pro models** for production (costs more than 4.1-mini)
+
+**⚠️ Important Caveats:**
+- The endpoint must accept OpenAI's API format (request/response structure)
+- You need a valid API key for that endpoint
+- Model names must match what the endpoint supports
+- **HMLR has ONLY been tested with GPT-4.1-mini** - other models are experimental
+- The memory architecture (chunking, retrieval, fact extraction) was optimized for GPT-4.1-mini
+- You may need to adjust prompts/parameters for other models
+
+**Using Gemini Pro Example:**
+```python
+# In external_api_client.py, line ~230
+def _get_base_url(self) -> str:
+    # Use a proxy that converts OpenAI format to Gemini API
+    return "https://generativelanguage.googleapis.com/v1beta/openai"
+    
+# Or use a local proxy like LiteLLM:
+# return "http://localhost:8000/v1"  # LiteLLM proxying to Gemini
+```
+
+Then HMLR will:
+- ✅ Still retrieve memories perfectly (this is what HMLR does best)
+- ✅ Build context with facts, bridge blocks, user profile
+- ✅ Send to Gemini Pro for the actual response generation
+- ✅ Store Gemini's response back into memory
+
+**Mix and Match:** You could even use different models for different operations:
+- GPT-4.1-mini for fact extraction (cheap, fast)
+- Gemini Pro for main chat responses (smart, strong reasoning)
+- Claude for creative writing tasks
 
 **Environment variable alternative:**
 You could modify the code to read from an environment variable:
