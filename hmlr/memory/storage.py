@@ -518,6 +518,20 @@ class Storage:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_provenance_dossier ON dossier_provenance(dossier_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_provenance_timestamp ON dossier_provenance(timestamp)")
         
+        # === BLOCK METADATA TABLE (Phase 2) ===
+        # Stores sticky meta tags at bridge block level (not per chunk)
+        # Tags stored ONCE per block, referenced by chunks via block_id
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS block_metadata (
+                block_id TEXT PRIMARY KEY,
+                global_tags TEXT,  -- JSON: ["env: python-3.9", "os: windows"]
+                section_rules TEXT,  -- JSON: [{"start_turn": 10, "end_turn": 15, "rule": "no-eval"}]
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (block_id) REFERENCES daily_ledger(block_id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_block_metadata_block ON block_metadata(block_id)")
+        
         self.conn.commit()
         print(f"Storage initialized: {self.db_path}")
     
@@ -2290,6 +2304,63 @@ class Storage:
             ORDER BY timestamp ASC
         """, (dossier_id,))
         return [dict(row) for row in cursor.fetchall()]
+    
+    # =========================================================================
+    # BLOCK METADATA OPERATIONS (Phase 2 - Sticky Meta Tags)
+    # =========================================================================
+    
+    def save_block_metadata(self, block_id: str, global_tags: List[str], 
+                           section_rules: List[Dict]) -> None:
+        """
+        Save sticky meta tags for a bridge block.
+        Tags are stored ONCE per block, not per chunk (pointer model).
+        
+        Args:
+            block_id: Bridge block ID
+            global_tags: List of global environment/constraint tags
+            section_rules: List of section-specific rules with turn ranges
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO block_metadata 
+            (block_id, global_tags, section_rules, created_at)
+            VALUES (?, ?, ?, ?)
+        """, (
+            block_id,
+            json.dumps(global_tags),
+            json.dumps(section_rules),
+            datetime.now().isoformat()
+        ))
+        self.conn.commit()
+        logger.info(f"Saved block metadata for {block_id}: {len(global_tags)} global tags, "
+                   f"{len(section_rules)} section rules")
+    
+    def get_block_metadata(self, block_id: str) -> Dict[str, Any]:
+        """
+        Retrieve sticky meta tags for a bridge block.
+        Used during read-side chunk hydration (group-by-block pattern).
+        
+        Args:
+            block_id: Bridge block ID
+            
+        Returns:
+            Dictionary with global_tags and section_rules
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT global_tags, section_rules 
+            FROM block_metadata 
+            WHERE block_id = ?
+        """, (block_id,))
+        
+        row = cursor.fetchone()
+        if not row:
+            return {'global_tags': [], 'section_rules': []}
+        
+        return {
+            'global_tags': json.loads(row[0]) if row[0] else [],
+            'section_rules': json.loads(row[1]) if row[1] else []
+        }
 
     def close(self):
         """Close database connection"""

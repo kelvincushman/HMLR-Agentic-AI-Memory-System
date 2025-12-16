@@ -227,16 +227,73 @@ assert results[0][1] == "dos_test"
 
 ---
 
-### Phase 2: Gardener Refactor
+### Phase 2: Gardener Refactor - Dual Output System
 
-**Goal:** Remove hierarchical chunking, add semantic fact grouping, prepare facts for dossier routing.
+**Goal:** Refactor gardener to produce two distinct outputs: (1) Sticky Meta Tags for scope/validity, and (2) Fact packets for dossier routing. Remove all chunking/embedding code.
+
+**Key Insight:** The gardener creates a **meta-layer at the bridge block level**, not at the chunk level. Tags are stored once per block and referenced via block_id to avoid duplication.
+
+#### Architectural Separation:
+
+| System | Purpose | Example |
+|--------|---------|---------|
+| **Dossiers** | The Narrative (Causal Chain) | "User is vegetarian → avoids meat → prefers tofu" |
+| **Sticky Tags** | The Scope (Validity/Environment) | `[OS: Windows]`, `[Status: Deprecated]`, `[Constraint: No-Eval]` |
 
 #### Tasks:
 
-1. **Remove `HierarchicalChunker` class** from `manual_gardener.py`
-2. **Modify `process_bridge_block()`** to accept pre-chunked facts
-3. **Add `_group_facts_semantically()`** method using LLM
-4. **Update output format** to produce fact packets for DossierGovernor
+1. **Remove ALL chunking code** from `manual_gardener.py`
+   - Delete `HierarchicalChunker` class entirely
+   - Remove embedding creation loop
+   - Remove `gardened_memory` storage (obsolete)
+
+2. **Add Sticky Meta Tag Classification**
+   - Implement three heuristics for scope detection
+   - Store tags in `block_metadata` table (not on chunks)
+   - Support global, section, and turn-level scopes
+
+3. **Modify `process_bridge_block()`** to dual-output flow
+   - Load existing facts from `fact_store` (extracted by FactScrubber)
+   - Classify facts into tags vs dossier-facts
+   - Apply tags to block metadata
+   - Group remaining facts semantically
+   - Route fact groups to DossierGovernor
+
+4. **Create `block_metadata` table** for tag storage
+
+#### The Three Heuristics for Tag Detection:
+
+**Heuristic A: Environment Test (Global Tag)**
+- **Logic:** Does this fact define settings, version, or language for the whole conversation?
+- **Trigger:** "I am using Python 3.9", "We are working on the Legacy System"
+- **Action:** Apply `env: python-3.9` or `context: legacy-system` to entire bridge block
+- **Why:** Prevents suggesting Python 3.12 code for a 3.9 conversation
+
+**Heuristic B: Constraint Test (Section/Global Tag)**
+- **Logic:** Does this fact strictly forbid or mandate something?
+- **Trigger:** "Never use the eval() function", "Always check permissions first"
+- **Action:** Apply `constraint: no-eval` or `constraint: check-perms` to relevant scope
+- **Why:** Retrieved chunks carry their own behavioral rules
+
+**Heuristic C: Definition Test (Section Tag)**
+- **Logic:** Does this fact rename or define an entity for a specific duration?
+- **Trigger:** "For this test, let's call the server 'Box A'", "Tartarus v3 is now deprecated"
+- **Action:** Apply `alias: server=Box A` or `status: deprecated` to section range
+- **Why:** Context-specific terminology travels with chunks
+
+#### Database Schema Addition:
+
+```sql
+CREATE TABLE IF NOT EXISTS block_metadata (
+    block_id TEXT PRIMARY KEY,
+    global_tags TEXT,  -- JSON: ["os: linux", "env: production"]
+    section_rules TEXT,  -- JSON: [{"start_turn": 10, "end_turn": 15, "rule": "DANGEROUS_STEP"}]
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (block_id) REFERENCES daily_ledger(block_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_block_metadata_block ON block_metadata(block_id);
+```
 
 #### Code Changes:
 
@@ -244,47 +301,118 @@ assert results[0][1] == "dos_test"
 # hmlr/memory/gardener/manual_gardener.py
 
 async def process_bridge_block(self, block_id: str):
-    """Process bridge block facts and route to dossier governor."""
+    """
+    Process bridge block with dual output:
+    1. Sticky Meta Tags → block_metadata table
+    2. Fact Packets → DossierGovernor
+    """
     
-    # 1. Retrieve bridge block
+    # 1. Load bridge block
     block = self.storage.get_bridge_block(block_id)
     if not block:
         print(f"No bridge block found with ID: {block_id}")
         return
     
-    # 2. Extract facts from block (already turn-level chunks)
-    facts = []
-    for turn in block['turns']:
-        turn_facts = self._extract_facts_from_turn(turn)
-        facts.extend(turn_facts)
+    # 2. Load existing facts from fact_store (extracted by FactScrubber during conversation)
+    facts = self.storage.get_facts_for_block(block_id)
+    if not facts:
+        print(f"   ⚠️  No facts found for block {block_id}")
+        return
     
-    # 3. Group facts semantically
-    fact_groups = await self._group_facts_semantically(facts)
+    print(f"   📋 Loaded {len(facts)} facts from fact_store")
     
-    # 4. Route each group to dossier governor
-    for group in fact_groups:
-        fact_packet = {
-            'cluster_label': group['label'],
-            'facts': group['facts'],
-            'source_block_id': block_id,
-            'timestamp': group['timestamp']
-        }
-        await self.dossier_governor.process_fact_packet(fact_packet)
+    # 3. TAGGING PASS: Classify facts into scope categories
+    tag_classification = await self._classify_facts_for_tagging(facts)
     
-    # 5. Delete processed bridge block
+    # 4. Apply tags to block metadata (NOT to individual chunks)
+    if tag_classification['global_tags'] or tag_classification['section_rules']:
+        self.storage.save_block_metadata(
+            block_id=block_id,
+            global_tags=tag_classification['global_tags'],
+            section_rules=tag_classification['section_rules']
+        )
+        print(f"   🏷️  Applied {len(tag_classification['global_tags'])} global tags")
+    
+    # 5. DOSSIER PASS: Group remaining facts (non-tag facts) semantically
+    dossier_facts = tag_classification['dossier_facts']
+    if dossier_facts:
+        fact_groups = await self._group_facts_semantically(dossier_facts)
+        
+        # 6. Route each group to dossier governor
+        for group in fact_groups:
+            fact_packet = {
+                'cluster_label': group['label'],
+                'facts': group['facts'],
+                'source_block_id': block_id,
+                'timestamp': group['timestamp']
+            }
+            await self.dossier_governor.process_fact_packet(fact_packet)
+    
+    # 7. Delete processed bridge block (facts preserved in fact_store, tags in block_metadata)
     self._delete_bridge_block(block_id)
-
-async def _group_facts_semantically(self, facts: List[Dict]) -> List[Dict]:
-    """Use LLM to group related facts by topic/theme."""
     
-    prompt = f"""Given these facts extracted from a conversation:
+    print(f"   ✅ Gardening complete: {block_id}")
+
+async def _classify_facts_for_tagging(self, facts: List[Dict]) -> Dict:
+    """
+    Classify facts using the three heuristics:
+    - Environment facts → Global Tags
+    - Constraint facts → Section/Global Tags  
+    - Definition facts → Section Tags
+    - Narrative facts → Dossier routing
+    """
+    
+    prompt = f"""You are analyzing facts extracted from a conversation to classify them by scope.
+
+Facts:
+{json.dumps([{{'text': f.get('value'), 'turn_id': f.get('turn_id')}} for f in facts], indent=2)}
+
+Apply these three heuristics:
+
+1. ENVIRONMENT TEST: Does this fact define settings, version, or language?
+   Examples: "Using Python 3.9", "On Windows", "Legacy system"
+   → Tag as: {{"type": "global", "key": "env", "value": "..."}}
+
+2. CONSTRAINT TEST: Does this fact forbid or mandate something?
+   Examples: "Never use eval()", "Always check permissions", "Deprecated method"
+   → Tag as: {{"type": "constraint", "key": "rule", "value": "...", "scope": "global|section"}}
+
+3. DEFINITION TEST: Does this fact rename/define an entity temporarily?
+   Examples: "Call the server Box A", "API renamed to NewAPI"
+   → Tag as: {{"type": "alias", "key": "term", "value": "...", "turn_range": [start, end]}}
+
+Return JSON:
+{{
+  "global_tags": ["env: python-3.9", ...],
+  "section_rules": [{{"start_turn": 10, "end_turn": 15, "rule": "no-eval"}}],
+  "dossier_facts": ["fact text that doesn't match above patterns", ...]
+}}
+
+If a fact doesn't match any heuristic, put it in dossier_facts for narrative tracking.
+"""
+    
+    response = await self.llm_client.query(
+        prompt=prompt,
+        model="gpt-4.1-mini",
+        response_format={"type": "json_object"}
+    )
+    
+    return json.loads(response)
+
+async def _group_facts_semantically(self, facts: List[str]) -> List[Dict]:
+    """
+    Group narrative facts (non-tag facts) by semantic theme.
+    These become dossier candidates.
+    """
+    
+    prompt = f"""Given these narrative facts:
 
 {json.dumps(facts, indent=2)}
 
 Group related facts by semantic theme. For each group, provide:
 1. A concise label (2-5 words)
 2. The facts that belong to that group
-3. The earliest timestamp from facts in the group
+3. The earliest timestamp
 
 Return as JSON array: [{{"label": "...", "facts": [...], "timestamp": "..."}}]
 """
@@ -295,21 +423,134 @@ Return as JSON array: [{{"label": "...", "facts": [...], "timestamp": "..."}}]
         response_format={"type": "json_object"}
     )
     
-    return json.loads(response)['groups']
+    return json.loads(response).get('groups', [])
+```
+
+#### Storage Method Additions:
+
+```python
+# hmlr/memory/storage.py
+
+def save_block_metadata(self, block_id: str, global_tags: List[str], 
+                       section_rules: List[Dict]) -> None:
+    """Save sticky meta tags for a bridge block."""
+    cursor = self.conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO block_metadata 
+        (block_id, global_tags, section_rules, created_at)
+        VALUES (?, ?, ?, ?)
+    """, (
+        block_id,
+        json.dumps(global_tags),
+        json.dumps(section_rules),
+        datetime.now().isoformat()
+    ))
+    self.conn.commit()
+
+def get_block_metadata(self, block_id: str) -> Dict:
+    """Retrieve sticky meta tags for a bridge block."""
+    cursor = self.conn.cursor()
+    cursor.execute("""
+        SELECT global_tags, section_rules 
+        FROM block_metadata 
+        WHERE block_id = ?
+    """, (block_id,))
+    
+    row = cursor.fetchone()
+    if not row:
+        return {'global_tags': [], 'section_rules': []}
+    
+    return {
+        'global_tags': json.loads(row[0]),
+        'section_rules': json.loads(row[1])
+    }
+```
+
+#### Read-Side: Group-by-Block Hydration
+
+**Critical:** When the Memory Governor retrieves chunks, the Assembler must implement "Group-by-Block" to avoid duplicating tags.
+
+```python
+# hmlr/memory/retrieval/context_assembler.py (new or modified)
+
+def hydrate_chunks_with_metadata(self, chunks: List[Dict]) -> str:
+    """
+    Group chunks by source_block_id and inject metadata once per block.
+    This avoids repeating tags for every chunk.
+    """
+    
+    # Group chunks by block_id
+    blocks = {}
+    for chunk in chunks:
+        block_id = chunk['block_id']
+        if block_id not in blocks:
+            blocks[block_id] = {
+                'metadata': self.storage.get_block_metadata(block_id),
+                'chunks': []
+            }
+        blocks[block_id]['chunks'].append(chunk)
+    
+    # Build context string
+    context_parts = []
+    for block_id, data in blocks.items():
+        # Header with tags (ONCE per block)
+        context_parts.append(f"\n### Context Block: {block_id}")
+        
+        if data['metadata']['global_tags']:
+            context_parts.append(f"Active Rules: {', '.join(data['metadata']['global_tags'])}")
+        
+        # Chunks (NO repeated tags)
+        for chunk in data['chunks']:
+            # Check if chunk falls in section rule range
+            section_tag = self._get_section_tag(chunk, data['metadata']['section_rules'])
+            if section_tag:
+                context_parts.append(f"  [{section_tag}] {chunk['text']}")
+            else:
+                context_parts.append(f"  {chunk['text']}")
+        
+        context_parts.append("")  # Blank line between blocks
+    
+    return "\n".join(context_parts)
 ```
 
 #### Test Checkpoint:
 
 ```python
-# Process test bridge block with facts about vegetarian diet
+# Test tagging classification
 facts = [
-    {"text": "User is strictly vegetarian", "turn_id": "turn_001"},
-    {"text": "User avoids all meat products", "turn_id": "turn_001"},
-    {"text": "User mentioned dietary restrictions", "turn_id": "turn_002"}
+    {"value": "I am using Python 3.9", "turn_id": "turn_001"},
+    {"value": "Never use eval() in this code", "turn_id": "turn_002"},
+    {"value": "For this test, call the server Box A", "turn_id": "turn_003"},
+    {"value": "User prefers dark mode", "turn_id": "turn_004"}
 ]
-groups = await gardener._group_facts_semantically(facts)
-assert len(groups) >= 1
-assert groups[0]['label'] in ["Vegetarian Diet", "Dietary Preferences"]
+
+classification = await gardener._classify_facts_for_tagging(facts)
+
+# Assert tags detected
+assert "env: python-3.9" in classification['global_tags']
+assert any(r['rule'] == 'no-eval' for r in classification['section_rules'])
+assert "User prefers dark mode" in classification['dossier_facts']
+
+# Test block metadata storage
+gardener.storage.save_block_metadata(
+    block_id='block_001',
+    global_tags=['env: python-3.9'],
+    section_rules=[{'start_turn': 2, 'end_turn': 5, 'rule': 'no-eval'}]
+)
+
+metadata = gardener.storage.get_block_metadata('block_001')
+assert metadata['global_tags'] == ['env: python-3.9']
+
+# Test grouped hydration (no tag duplication)
+chunks = [
+    {'block_id': 'block_001', 'text': 'Chunk 1', 'turn_id': 'turn_003'},
+    {'block_id': 'block_001', 'text': 'Chunk 2', 'turn_id': 'turn_004'},
+]
+
+context = assembler.hydrate_chunks_with_metadata(chunks)
+# Should have ONE header with tags, followed by 2 chunks
+assert context.count('Active Rules') == 1
+assert context.count('Chunk') == 2
 ```
 
 ---

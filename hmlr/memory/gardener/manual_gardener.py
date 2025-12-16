@@ -1,141 +1,46 @@
 """
-Manual Gardener - Moves Bridge Blocks to Long-term Memory
+Manual Gardener - Phase 2 Refactored: Fact Classifier and Router
 
-The Gardener's Job:
-1. Take completed Bridge Block (topic conversation)
-2. Hierarchically chunk: Turn → Paragraph → Sentence
-3. Embed each level with proper IDs
-4. Extract global meta-tags from ENTIRE topic
-5. Store in long-term memory with tags
+The Gardener's NEW Job (Post-Phase 2):
+1. Load bridge block (completed topic conversation)
+2. Load existing facts from fact_store (extracted by FactScrubber during conversation)
+3. Classify facts using THREE HEURISTICS:
+   - Environment Test: Global settings (Python version, OS, language)
+   - Constraint Test: Rules that forbid/mandate behaviors
+   - Definition Test: Temporary aliases or status markers
+4. Apply tags to block_metadata table (stored ONCE per block)
+5. Group remaining facts semantically (facts that don't match tag patterns)
+6. Route fact groups to DossierGovernor for dossier creation
+7. Delete bridge block
 
-Design Philosophy:
-- Sentence/Paragraph: Store verbatim text (low token count)
-- Turn: Store summary if >250 tokens, else verbatim
-- Global Tags: LLM reads entire topic, extracts rules/constraints
-- Tag Adhesion: Tags stick to ALL retrieved pieces from this topic
+Key Changes from Phase 1:
+- NO MORE CHUNKING: Facts already extracted by FactScrubber
+- NO MORE EMBEDDING: Done at fact level in dossier system
+- NO MORE gardened_memory: Replaced by block_metadata + dossiers
+- Gardener is now a CLASSIFIER, not a CHUNKER
+
+Dual Output System:
+- Sticky Meta Tags: Scope/validity/environment (block_metadata table)
+- Dossier Facts: Narrative/causal chains (routed to DossierGovernor)
 """
 
 import re
 import json
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 from datetime import datetime
-from dataclasses import dataclass
-
-@dataclass
-class Chunk:
-    """Hierarchical chunk with ID and verbatim text"""
-    chunk_id: str
-    chunk_type: str  # 'sentence', 'paragraph', 'turn'
-    text: str  # Verbatim or summary
-    parent_id: str = None
-    token_count: int = 0
-
-
-class HierarchicalChunker:
-    """
-    Creates hierarchical chunk structure:
-    turn_001
-      ├─ paragraph_001
-      │   ├─ sentence_001
-      │   └─ sentence_002
-      └─ paragraph_002
-          ├─ sentence_003
-          └─ sentence_004
-    """
-    
-    TURN_SUMMARY_THRESHOLD = 250  # tokens
-    
-    def __init__(self):
-        self.chunks: List[Chunk] = []
-    
-    def chunk_turn(self, turn_id: str, user_message: str, assistant_response: str) -> List[Chunk]:
-        """
-        Chunk a single turn hierarchically.
-        
-        Args:
-            turn_id: Turn identifier (e.g., 't_20251204_001')
-            user_message: User's query
-            assistant_response: AI's response
-        
-        Returns:
-            List of hierarchical chunks
-        """
-        chunks = []
-        
-        # Combine user + AI for full turn text
-        full_turn = f"User: {user_message}\n\nAssistant: {assistant_response}"
-        turn_tokens = self._estimate_tokens(full_turn)
-        
-        # Split assistant response into paragraphs
-        paragraphs = self._split_paragraphs(assistant_response)
-        
-        # Process each paragraph
-        for p_idx, para_text in enumerate(paragraphs):
-            para_id = f"{turn_id}_p{p_idx:03d}"
-            
-            # Split paragraph into sentences
-            sentences = self._split_sentences(para_text)
-            
-            # Create sentence chunks
-            for s_idx, sent_text in enumerate(sentences):
-                sent_id = f"{para_id}_s{s_idx:03d}"
-                chunks.append(Chunk(
-                    chunk_id=sent_id,
-                    chunk_type='sentence',
-                    text=sent_text.strip(),
-                    parent_id=para_id,
-                    token_count=self._estimate_tokens(sent_text)
-                ))
-            
-            # Create paragraph chunk (verbatim)
-            chunks.append(Chunk(
-                chunk_id=para_id,
-                chunk_type='paragraph',
-                text=para_text.strip(),
-                parent_id=turn_id,
-                token_count=self._estimate_tokens(para_text)
-            ))
-        
-        # Create turn chunk (summary if >250 tokens, else verbatim)
-        if turn_tokens > self.TURN_SUMMARY_THRESHOLD:
-            turn_text = "[SUMMARY NEEDED]"  # Gardener will generate this
-        else:
-            turn_text = full_turn
-        
-        chunks.append(Chunk(
-            chunk_id=turn_id,
-            chunk_type='turn',
-            text=turn_text,
-            parent_id=None,
-            token_count=turn_tokens
-        ))
-        
-        return chunks
-    
-    def _split_paragraphs(self, text: str) -> List[str]:
-        """Split text into paragraphs."""
-        # Split on double newlines or more
-        paragraphs = re.split(r'\n\n+', text)
-        return [p.strip() for p in paragraphs if p.strip()]
-    
-    def _split_sentences(self, text: str) -> List[str]:
-        """Split paragraph into sentences."""
-        # Simple sentence splitter (handles periods, question marks, exclamation points)
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        return [s.strip() for s in sentences if s.strip()]
-    
-    def _estimate_tokens(self, text: str) -> int:
-        """Rough token estimate (1 token ≈ 4 chars)."""
-        return len(text) // 4
 
 
 class ManualGardener:
     """
-    Manual Gardener for Test 8.
+    Phase 2 Refactored Gardener: Fact Classifier and Router
     
-    Takes a Bridge Block and processes it into long-term memory with:
-    - Hierarchical embeddings
-    - Global meta-tags
+    NO MORE CHUNKING: Facts already extracted by FactScrubber during conversation.
+    
+    New responsibilities:
+    1. Classify facts using three heuristics (Environment, Constraint, Definition)
+    2. Apply sticky meta tags to block_metadata table
+    3. Group remaining facts semantically
+    4. Route fact groups to DossierGovernor
     """
     
     def __init__(self, storage, embedding_storage, llm_client, dossier_governor=None, dossier_storage=None):
@@ -143,30 +48,33 @@ class ManualGardener:
         Initialize gardener.
         
         Args:
-            storage: Storage instance
-            embedding_storage: EmbeddingStorage instance
-            llm_client: LLM client for meta-tag extraction
-            dossier_governor: DossierGovernor instance (Phase 3+)
-            dossier_storage: DossierEmbeddingStorage instance (Phase 3+)
+            storage: Storage instance (for block_metadata operations)
+            embedding_storage: EmbeddingStorage instance (deprecated for Phase 2)
+            llm_client: LLM client for fact classification and grouping
+            dossier_governor: DossierGovernor instance for fact routing
+            dossier_storage: DossierEmbeddingStorage instance
         """
         self.storage = storage
-        self.embedding_storage = embedding_storage
+        self.embedding_storage = embedding_storage  # Kept for backward compatibility, not used in Phase 2
         self.llm_client = llm_client
-        self.chunker = HierarchicalChunker()
         self.dossier_governor = dossier_governor
         self.dossier_storage = dossier_storage
     
     def process_bridge_block(self, block_id: str) -> Dict[str, Any]:
         """
-        Process a Bridge Block into long-term memory.
+        Process a Bridge Block with Phase 2 Dual-Output Flow.
         
-        Steps:
-        1. Load block from daily_ledger
-        2. Chunk hierarchically
-        3. Generate summaries for large turns
-        4. Extract global meta-tags from entire topic
-        5. Embed all chunks
-        6. Store in long-term memory
+        Phase 2 Flow:
+        1. Load bridge block
+        2. Load existing facts from fact_store (extracted by FactScrubber)
+        3. Classify facts using THREE HEURISTICS:
+           - Environment Test: Global settings (Python version, OS, etc.)
+           - Constraint Test: Rules that forbid/mandate behaviors
+           - Definition Test: Temporary aliases or status markers
+        4. Apply tags to block_metadata table (stored ONCE per block)
+        5. Group remaining facts semantically (facts that don't match tag patterns)
+        6. Route fact groups to DossierGovernor for dossier creation
+        7. Delete bridge block
         
         Args:
             block_id: Bridge Block ID
@@ -174,7 +82,7 @@ class ManualGardener:
         Returns:
             Processing summary with stats
         """
-        print(f"\n🌱 Gardener: Processing Block {block_id}")
+        print(f"\n🌱 Gardener Phase 2: Processing Block {block_id}")
         
         # 1. Load Bridge Block
         block_data = self._load_bridge_block(block_id)
@@ -183,75 +91,78 @@ class ManualGardener:
             return {"status": "error", "message": "Block not found"}
         
         topic_label = block_data.get('topic_label', 'Unknown Topic')
-        turns = block_data.get('turns', [])
-        
         print(f"   📋 Topic: {topic_label}")
-        print(f"   📝 Turns: {len(turns)}")
         
-        # 2. Chunk all turns hierarchically
-        print(f"\n   🔪 Chunking turns...")
-        all_chunks = []
-        
-        for turn in turns:
-            turn_id = turn.get('turn_id', 'unknown')
-            user_msg = turn.get('user_message', '')
-            ai_resp = turn.get('ai_response', '')
-            
-            chunks = self.chunker.chunk_turn(turn_id, user_msg, ai_resp)
-            all_chunks.extend(chunks)
-            
-            # Count chunks by type
-            sentences = sum(1 for c in chunks if c.chunk_type == 'sentence')
-            paragraphs = sum(1 for c in chunks if c.chunk_type == 'paragraph')
-            print(f"      {turn_id}: {paragraphs} paragraphs, {sentences} sentences")
-        
-        print(f"   ✅ Total chunks: {len(all_chunks)}")
-        
-        # 3. Generate summaries for large turns
-        print(f"\n   📝 Generating turn summaries...")
-        for chunk in all_chunks:
-            if chunk.chunk_type == 'turn' and chunk.text == "[SUMMARY NEEDED]":
-                # Find all child chunks
-                turn_paragraphs = [c for c in all_chunks 
-                                  if c.chunk_type == 'paragraph' and c.parent_id == chunk.chunk_id]
-                full_text = "\n\n".join([p.text for p in turn_paragraphs])
-                
-                # Generate summary
-                summary = self._generate_turn_summary(full_text, chunk.chunk_id)
-                chunk.text = summary
-                print(f"      ✅ {chunk.chunk_id}: {len(summary)} chars")
-        
-        # 4. Load existing facts from fact_store (extracted by FactScrubber during conversation)
+        # 2. Load existing facts from fact_store (extracted by FactScrubber during conversation)
         print(f"\n   📋 Loading facts from fact_store...")
         existing_facts = self.storage.get_facts_for_block(block_id)
-        print(f"   ✅ Found {len(existing_facts)} facts extracted during conversation")
         
-        # Show the facts
-        for fact in existing_facts:
-            fact_key = fact.get('key', 'unknown')
+        if not existing_facts:
+            print(f"   ⚠️  No facts found for {block_id} - skipping")
+            self._delete_bridge_block(block_id)
+            return {
+                "status": "success",
+                "block_id": block_id,
+                "message": "No facts to process"
+            }
+        
+        print(f"   ✅ Found {len(existing_facts)} facts from conversation")
+        
+        # Show sample facts
+        for i, fact in enumerate(existing_facts[:5]):  # Show first 5
             fact_value = fact.get('value', '')
-            print(f"      • {fact_key}: {fact_value[:80]}...")
+            print(f"      • {fact_value[:80]}...")
+        if len(existing_facts) > 5:
+            print(f"      ... and {len(existing_facts) - 5} more")
         
-        # 5. Process facts into dossiers (Phase 2 -> Phase 3 flow)
-        if self.dossier_governor and existing_facts:
-            print(f"\n   🗂️  Processing facts into dossiers...")
+        # 3. TAGGING PASS: Classify facts using three heuristics
+        print(f"\n   🏷️  Classifying facts (Environment/Constraint/Definition heuristics)...")
+        import asyncio
+        classification = asyncio.run(self._classify_facts_for_tagging(existing_facts))
+        
+        # 4. Apply tags to block metadata (NOT to chunks)
+        global_tags = classification.get('global_tags', [])
+        section_rules = classification.get('section_rules', [])
+        
+        if global_tags or section_rules:
+            self.storage.save_block_metadata(
+                block_id=block_id,
+                global_tags=global_tags,
+                section_rules=section_rules
+            )
+            print(f"   ✅ Applied {len(global_tags)} global tags, {len(section_rules)} section rules")
+            
+            # Show tags
+            for tag in global_tags[:3]:  # Show first 3
+                print(f"      [Global] {tag}")
+            for rule in section_rules[:3]:  # Show first 3
+                print(f"      [Section] {rule.get('rule', 'unknown')}")
+        else:
+            print(f"   ℹ️  No tags identified for this block")
+        
+        # 5. DOSSIER PASS: Group remaining facts semantically
+        dossier_facts = classification.get('dossier_facts', [])
+        dossier_count = 0
+        
+        if dossier_facts and self.dossier_governor:
+            print(f"\n   🗂️  Processing {len(dossier_facts)} facts into dossiers...")
             
             # Prepare facts for semantic grouping
             fact_list = []
-            for fact in existing_facts:
+            for fact_text in dossier_facts:
+                # Find original fact to get metadata
+                original_fact = next((f for f in existing_facts if f.get('value') == fact_text), {})
                 fact_list.append({
-                    'text': fact.get('value', ''),
-                    'key': fact.get('key', ''),
-                    'timestamp': fact.get('timestamp', datetime.now().isoformat()),
-                    'turn_id': fact.get('turn_id', '')
+                    'text': fact_text,
+                    'key': original_fact.get('key', ''),
+                    'timestamp': original_fact.get('timestamp', datetime.now().isoformat()),
+                    'turn_id': original_fact.get('turn_id', '')
                 })
             
             # Group facts semantically
-            import asyncio
-            fact_groups = asyncio.run(self._group_facts_semantically(fact_list))
+            fact_groups = await self._group_facts_semantically(fact_list)
             
-            # Create dossiers from each group
-            dossier_count = 0
+            # 6. Route each group to dossier governor
             for group in fact_groups:
                 fact_packet = {
                     'cluster_label': group['label'],
@@ -261,49 +172,31 @@ class ManualGardener:
                 }
                 
                 try:
-                    dossier_id = asyncio.run(self.dossier_governor.process_fact_packet(fact_packet))
+                    dossier_id = await self.dossier_governor.process_fact_packet(fact_packet)
                     if dossier_id:
-                        print(f"      ✅ Created/updated dossier: {dossier_id} ({group['label']})")
+                        print(f"      ✅ Dossier: {dossier_id} ({group['label']})")
                         dossier_count += 1
                 except Exception as e:
-                    print(f"      ⚠️  Failed to create dossier for '{group['label']}': {e}")
+                    print(f"      ⚠️  Failed: {group['label']}: {e}")
             
-            print(f"   ✅ Processed {len(fact_groups)} fact groups into {dossier_count} dossiers")
+            print(f"   ✅ Created/updated {dossier_count} dossiers")
         elif not self.dossier_governor:
-            print(f"   ⚠️  Dossier system unavailable - facts stored but not grouped into dossiers")
+            print(f"   ⚠️  Dossier system unavailable")
+        elif not dossier_facts:
+            print(f"   ℹ️  All facts classified as tags, no dossier facts")
         
-        # 7. Embed all chunks
-        print(f"\n   🔍 Creating embeddings...")
-        embedding_count = 0
-        
-        for chunk in all_chunks:
-            # Embed the verbatim text
-            num_embeddings = self.embedding_storage.save_turn_embeddings(
-                chunk.chunk_id, 
-                [chunk.text]  # Single chunk containing verbatim text
-            )
-            embedding_count += num_embeddings
-        
-        print(f"   ✅ Created {embedding_count} embeddings")
-        
-        # 8. Store chunks in long-term memory (gardened_memory table)
-        print(f"\n   💾 Storing in long-term memory...")
-        self._store_chunks_with_tags(block_id, all_chunks, existing_facts)
-        print(f"   ✅ Stored {len(all_chunks)} chunks with {len(existing_facts)} facts")
-        
-        # 9. Delete processed bridge block from active memory
+        # 7. Delete processed bridge block from active memory
         self._delete_bridge_block(block_id)
         
-        print(f"\n✅ Gardener: Block {block_id} processed successfully!")
+        print(f"\n✅ Gardener Phase 2: Block {block_id} processed successfully!")
         
         return {
             "status": "success",
             "block_id": block_id,
             "topic_label": topic_label,
-            "chunks_created": len(all_chunks),
-            "embeddings_created": embedding_count,
             "facts_processed": len(existing_facts),
-            "dossiers_created": dossier_count if self.dossier_governor else 0
+            "tags_applied": len(global_tags) + len(section_rules),
+            "dossiers_created": dossier_count
         }
     
     def _load_bridge_block(self, block_id: str) -> Dict[str, Any]:
@@ -320,129 +213,120 @@ class ManualGardener:
         
         return json.loads(row[0])
     
-    def _generate_turn_summary(self, full_text: str, turn_id: str) -> str:
+    async def _classify_facts_for_tagging(self, facts: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Generate summary for a large turn (>250 tokens).
+        Classify facts using THREE HEURISTICS (Phase 2 core logic).
+        
+        Heuristics:
+        1. ENVIRONMENT TEST: Is this a global setting/version/language?
+           Examples: "Using Python 3.9", "On Windows", "Project uses TypeScript"
+           → Global tag (applies to all retrieved content)
+        
+        2. CONSTRAINT TEST: Does this forbid or mandate something?
+           Examples: "Never use eval()", "Always check permissions first"
+           → Constraint tag (global or section-specific)
+        
+        3. DEFINITION TEST: Is this a temporary renaming or status marker?
+           Examples: "Call the server Box A", "Old API is deprecated"
+           → Alias/status tag (section-specific with turn range)
         
         Args:
-            full_text: Full turn text
-            turn_id: Turn identifier
+            facts: List of fact dictionaries from fact_store
         
         Returns:
-            Summary text
+            {
+                "global_tags": ["env: python-3.9", "os: windows"],
+                "section_rules": [{"start_turn": 10, "end_turn": 15, "rule": "no-eval"}],
+                "dossier_facts": ["User prefers dark mode", "User works remotely"]
+            }
         """
-        prompt = f"""Summarize this conversation turn concisely (2-3 sentences):
+        if not facts:
+            return {"global_tags": [], "section_rules": [], "dossier_facts": []}
+        
+        # Format facts for LLM
+        facts_formatted = []
+        for fact in facts:
+            facts_formatted.append({
+                "text": fact.get('value', ''),
+                "turn_id": fact.get('turn_id', '')
+            })
+        
+        prompt = f"""Analyze these facts extracted from a conversation and classify them using THREE heuristics:
 
-{full_text}
+Facts:
+{json.dumps(facts_formatted, indent=2)}
 
-Summary:"""
+HEURISTICS:
+
+1. ENVIRONMENT TEST: Global settings, versions, languages, OS?
+   Examples: "Using Python 3.9" → env: python-3.9
+             "On Windows" → os: windows
+             "Project uses TypeScript" → lang: typescript
+   → Tag as GLOBAL (applies to entire conversation)
+
+2. CONSTRAINT TEST: Rules that FORBID or MANDATE something?
+   Examples: "Never use eval()" → no-eval
+             "Always check permissions" → check-permissions
+             "Must validate input" → validate-input
+   → Tag as CONSTRAINT (global or section-specific)
+
+3. DEFINITION TEST: Temporary aliases, renamings, status markers?
+   Examples: "Call the server Box A" → server=Box A (turn range)
+             "Old API is deprecated" → status: deprecated (turn range)
+             "Refer to database as DB1" → database=DB1 (turn range)
+   → Tag as ALIAS/STATUS (section-specific with turn range)
+
+IMPORTANT: Facts that don't match any of these patterns go to "dossier_facts".
+These are narrative facts (preferences, history, context) that belong in dossiers.
+
+Return JSON:
+{{
+  "global_tags": ["env: python-3.9", "os: windows"],
+  "section_rules": [
+    {{"start_turn": 10, "end_turn": 15, "rule": "no-eval"}},
+    {{"start_turn": 5, "end_turn": 8, "rule": "server=Box A"}}
+  ],
+  "dossier_facts": ["User prefers dark mode", "User works remotely"]
+}}
+
+Classification:"""
         
         try:
-            response = self.llm_client.query_external_api(prompt, model="gpt-4.1-mini")
-            return response.strip()
-        except Exception as e:
-            print(f"      ⚠️  Summary generation failed for {turn_id}: {e}")
-            return full_text[:500] + "..."  # Fallback truncation
-    
-    def _reconstruct_full_topic(self, block_data: Dict[str, Any]) -> str:
-        """Reconstruct full topic conversation for meta-tag extraction."""
-        turns = block_data.get('turns', [])
-        full_text = f"Topic: {block_data.get('topic_label', 'Unknown')}\n\n"
-        
-        for turn in turns:
-            full_text += f"User: {turn.get('user_message', '')}\n"
-            full_text += f"Assistant: {turn.get('ai_response', '')}\n\n"
-        
-        return full_text
-    
-    def _extract_global_tags(self, full_topic_text: str, topic_label: str) -> List[Dict[str, str]]:
-        """
-        Extract global meta-tags from entire topic.
-        
-        These tags apply to ALL chunks from this topic.
-        
-        Args:
-            full_topic_text: Full conversation text
-            topic_label: Topic name
-        
-        Returns:
-            List of global tags
-        """
-        prompt = f"""Read this entire conversation and extract global meta-tags that apply to the ENTIRE topic.
-
-Focus on:
-- Global rules/policies mentioned
-- Deprecations/safety warnings
-- Project constraints
-- Key decisions made
-- Important facts that should "stick" to any retrieved piece
-
-Conversation:
-{full_topic_text}
-
-Return JSON array of tags in format:
-{{"type": "global_rule|deprecation|constraint|decision|fact", "value": "brief statement"}}
-
-Tags:"""
-        
-        try:
-            response = self.llm_client.query_external_api(prompt, model="gpt-4.1-mini")
-            
-            # Extract JSON
-            json_match = re.search(r'\[.*\]', response, re.DOTALL)
-            if json_match:
-                tags = json.loads(json_match.group(0))
-                return tags
-            else:
-                print(f"      ⚠️  No JSON found in tag extraction response")
-                return []
-        
-        except Exception as e:
-            print(f"      ⚠️  Tag extraction failed: {e}")
-            return []
-    
-    def _store_chunks_with_tags(self, block_id: str, chunks: List[Chunk], global_tags: List[Dict[str, str]]):
-        """
-        Store chunks and global tags in long-term memory.
-        
-        Note: For now, storing in a simple table. In full HMLR v2, this would go to
-        spans/summaries tables with proper hierarchical structure.
-        """
-        cursor = self.storage.conn.cursor()
-        
-        # Create gardened_memory table if not exists
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS gardened_memory (
-                chunk_id TEXT PRIMARY KEY,
-                block_id TEXT NOT NULL,
-                chunk_type TEXT NOT NULL,
-                text_content TEXT NOT NULL,
-                parent_id TEXT,
-                token_count INTEGER,
-                global_tags TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            response = await self.llm_client.query_external_api(
+                prompt=prompt,
+                model="gpt-4.1-mini"
             )
-        """)
+            
+            # Extract JSON from response
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                classification = json.loads(json_match.group(0))
+                
+                # Validate structure
+                if 'global_tags' not in classification:
+                    classification['global_tags'] = []
+                if 'section_rules' not in classification:
+                    classification['section_rules'] = []
+                if 'dossier_facts' not in classification:
+                    classification['dossier_facts'] = []
+                
+                return classification
+            else:
+                print(f"   ⚠️  No JSON found in classification response, using fallback")
+                # Fallback: all facts go to dossiers
+                return {
+                    "global_tags": [],
+                    "section_rules": [],
+                    "dossier_facts": [f.get('value', '') for f in facts]
+                }
         
-        # Store each chunk with global tags
-        tags_json = json.dumps(global_tags)
-        
-        for chunk in chunks:
-            cursor.execute("""
-                INSERT OR REPLACE INTO gardened_memory
-                (chunk_id, block_id, chunk_type, text_content, parent_id, token_count, global_tags)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                chunk.chunk_id,
-                block_id,
-                chunk.chunk_type,
-                chunk.text,
-                chunk.parent_id,
-                chunk.token_count,
-                tags_json
-            ))
-        
-        self.storage.conn.commit()
+        except Exception as e:
+            print(f"   ⚠️  Classification failed: {e}, using fallback")
+            return {
+                "global_tags": [],
+                "section_rules": [],
+                "dossier_facts": [f.get('value', '') for f in facts]
+            }
     
     def _delete_bridge_block(self, block_id: str):
         """
