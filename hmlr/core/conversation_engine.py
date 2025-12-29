@@ -50,7 +50,8 @@ class ConversationEngine:
         chunk_engine,
         fact_scrubber,
         embedding_storage,
-        previous_day=None
+        previous_day=None,
+        raise_on_error: bool = False
     ):
         """
         Initialize ConversationEngine with all required components.
@@ -71,6 +72,9 @@ class ConversationEngine:
             fact_scrubber: FactScrubber instance
             embedding_storage: EmbeddingStorage instance
             previous_day: Optional[str] ID of the previous day
+            raise_on_error: If True, exceptions propagate instead of returning
+                          ConversationResponse with ERROR status. Set True for
+                          LangGraph integration so graph can handle errors.
         """
         self.storage = storage
         self.sliding_window = sliding_window
@@ -86,6 +90,7 @@ class ConversationEngine:
         self.fact_scrubber = fact_scrubber
         self.embedding_storage = embedding_storage
         self.previous_day = previous_day
+        self.raise_on_error = raise_on_error
         
         self.logger = logging.getLogger(__name__)
         
@@ -97,6 +102,7 @@ class ConversationEngine:
         user_query: str,
         session_id: str = "default_session",
         force_intent: Optional[str] = None,
+        await_background_tasks: bool = False,
         **kwargs
     ) -> ConversationResponse:
         """
@@ -106,6 +112,8 @@ class ConversationEngine:
             user_query: User's input message
             session_id: Unique session identifier
             force_intent: Optional intent override (used for task lock or session override)
+            await_background_tasks: If True, wait for Scribe/background tasks to complete
+                                   before returning. Set True for LangGraph integration.
             **kwargs: Additional parameters passed to internals
         
         Returns:
@@ -138,7 +146,11 @@ class ConversationEngine:
             # 4. Route to chat handler
             response = await self._handle_chat(user_query, session_id=session_id, **kwargs)
             
-            # 4. Calculate processing time
+            # 4. Wait for background tasks if requested (LangGraph mode)
+            if await_background_tasks and hasattr(self, 'background_manager'):
+                await self.background_manager.shutdown(timeout=10.0)
+            
+            # 5. Calculate processing time
             end_time = datetime.now()
             response.processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
             
@@ -148,6 +160,10 @@ class ConversationEngine:
             # Handle unexpected errors
             error_trace = traceback.format_exc()
             logger.error(f"Error in ConversationEngine: {e}", exc_info=True)
+            
+            # For LangGraph integration: propagate exceptions so graph can handle them
+            if self.raise_on_error:
+                raise
             
             end_time = datetime.now()
             processing_time = int((end_time - start_time).total_seconds() * 1000)
@@ -164,20 +180,7 @@ class ConversationEngine:
     
     async def _handle_chat(self, user_query: str, session_id: str = "default_session", **kwargs) -> ConversationResponse:
         """
-        
-        
-        This implements the CORRECTED HMLR architecture:
-        1. Governor: 3 parallel tasks (routing, memory retrieval, fact lookup)
-        2. Execute 1 of 4 routing scenarios
-        3. Hydrator: Load Bridge Block + format context + metadata instructions
-        4. Main LLM: Generate response + optional metadata JSON
-        5. Parse response, update block headers, append turn
-        
-        Args:
-            user_query: User's chat message
-        
-        Returns:
-            ConversationResponse with chat response and metadata
+        Processes a chat message using the HMLR architecture.
         """
         logger.info("[Bridge Block Chat]")
         
@@ -190,311 +193,171 @@ class ConversationEngine:
             )
         
         try:
-            # Start debug logging for this turn
-            self.logger.info(f"Starting turn for query: {user_query[:50]}...")
-            
-            # --- Chunking & Fact Extraction --- #
-            # Generate turn_id immediately (needed for chunking)
+            # 1. Chunking & Fact Extraction (Parallel)
             turn_id = f"turn_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            logger.debug(f"ChunkEngine: Chunking query (turn_id={turn_id})...")
+            chunks = self._chunk_user_query(user_query, turn_id)
             
-            # Chunk the query into hierarchical structure (turn → paragraph → sentence)
-            chunks = []
-            if self.chunk_engine:
-                chunks = self.chunk_engine.chunk_turn(
-                    text=user_query,
-                    turn_id=turn_id,
-                    span_id=None  # Daily conversations don't have span_id yet
-                )
-                logger.debug(f"Created {len(chunks)} chunks")
-            else:
-                logger.warning(f"ChunkEngine not available, skipping chunking")
-            
-            # === USE GPT-4.1-NANO METADATA (extracted during intent detection) === #
-            metadata = getattr(self, '_current_metadata', {})
-            gpt_nano_keywords = metadata.get('keywords', [])
-            gpt_nano_topics = metadata.get('topics', [])
-            
-            if gpt_nano_keywords:
-                logger.debug(f"Using GPT-4.1-nano keywords: {gpt_nano_keywords[:5]}")
-            
-            # --- Governor: Routing & Context Retrieval --- #
+            # 2. Routing & Retrieval (Parallel)
             day_id = self.conversation_mgr.current_day
-            logger.info(f"Governor: Running parallel tasks for day {day_id}")
-            
-            # Start fact extraction in parallel with Governor (if chunks available)
-            fact_extraction_task = None
-            if self.fact_scrubber and chunks:
-                logger.debug("FactScrubber: Starting extraction in parallel")
-                print(f"    FactScrubber: Starting extraction for {len(chunks)} chunks...")
-                fact_extraction_task = asyncio.create_task(
-                    self.fact_scrubber.extract_and_save(
-                        turn_id=turn_id,
-                        message_text=user_query,
-                        chunks=chunks,
-                        span_id=None,
-                        block_id=None  # Will update after Governor assigns block_id
-                    )
-                )
-            else:
-                if not self.fact_scrubber:
-                    print(f"     FactScrubber not available")
-                if not chunks:
-                    print(f"     No chunks available for fact extraction")
-            
-            # Call async govern() method
-            try:
-                routing_decision, filtered_memories, facts, dossiers = await self.governor.govern(user_query, day_id)
-            except RetrievalError as e:
-                logger.error(f"Critical retrieval failure: {e}. Proceeding with memory disabled.")
-                # Fallback: No memory, default routing
-                routing_decision = {'matched_block_id': None, 'is_new_topic': True, 'suggested_label': 'General Discussion'}
-                filtered_memories = []
-                facts = []
-                dossiers = []
-
-            logger.info(
-                f"Governor results: routing={routing_decision.get('matched_block_id')}, "
-                f"memories={len(filtered_memories)}, facts={len(facts)}, dossiers={len(dossiers)}"
+            routing_decision, filtered_memories, facts, dossiers, fact_task = await self._orchestrate_retrieval(
+                user_query, day_id, turn_id, chunks
             )
             
-            # --- Routing Execution --- #
-            block_id = None
-            is_new_topic = False
+            # 3. Routing Execution
+            block_id, is_new_topic = await self._execute_routing_strategy(routing_decision, day_id)
             
-            matched_block_id = routing_decision.get('matched_block_id')
-            is_new = routing_decision.get('is_new_topic', False)
-            suggested_label = routing_decision.get('suggested_label', 'General Discussion')
+            # 4. Link Facts to Block (Await parallel extraction)
+            await self._finalize_fact_extraction(fact_task, turn_id, block_id)
             
-            # Get last active block (should be only one with status='ACTIVE')
-            active_blocks = self.storage.get_active_bridge_blocks()
-            last_active_block = None
-            for block in active_blocks:
-                if block.get('status') == 'ACTIVE':
-                    last_active_block = block
-                    break
-            
-            # Determine which scenario to execute
-            if matched_block_id and last_active_block and matched_block_id == last_active_block['block_id']:
-                # Strategy: Topic Continuation
-                logger.info(f"Routing Strategy: Topic Continuation (block {matched_block_id})")
-                block_id = matched_block_id
-                is_new_topic = False
-                # No status changes needed
-                
-            elif matched_block_id and not is_new:
-                # Strategy: Topic Resumption
-                logger.info(f"Routing Strategy: Topic Resumption (reactivate block {matched_block_id})")
-                
-                # Pause current active block if exists
-                if last_active_block:
-                    old_active_id = last_active_block['block_id']
-                    logger.debug(f"Pausing old block: {old_active_id}")
-                    self.storage.update_bridge_block_status(old_active_id, 'PAUSED')
-                    self.storage.generate_block_summary(old_active_id)
-                
-                # Reactivate matched block
-                self.storage.update_bridge_block_status(matched_block_id, 'ACTIVE')
-                block_id = matched_block_id
-                is_new_topic = False
-                
-            elif is_new and not last_active_block:
-                # Strategy: New Topic Creation (no active blocks)
-                logger.info("Routing Strategy: New Topic Creation (first topic today)")
-                
-                # Extract keywords from query
-                keywords = gpt_nano_keywords or []
-                
-                # Create new Bridge Block
-                block_id = self.storage.create_new_bridge_block(
-                    day_id=day_id,
-                    topic_label=suggested_label,
-                    keywords=keywords
-                )
-                logger.debug(f"Created block: {block_id}")
-                is_new_topic = True
-                
-                
-            elif is_new and last_active_block:
-                # Strategy: Topic Shift to New
-                logger.info("Routing Strategy: Topic Shift to New")
-                
-                # Pause current active block
-                old_active_id = last_active_block['block_id']
-                logger.debug(f"Pausing old block: {old_active_id}")
-                self.storage.update_bridge_block_status(old_active_id, 'PAUSED')
-                self.storage.generate_block_summary(old_active_id)
-                
-                # Extract keywords from query
-                keywords = gpt_nano_keywords or []
-                
-                # Create new Bridge Block
-                block_id = self.storage.create_new_bridge_block(
-                    day_id=day_id,
-                    topic_label=suggested_label,
-                    keywords=keywords
-                )
-                logger.debug(f"Created block: {block_id}")
-                is_new_topic = True
-            
-            else:
-                # Fallback: Shouldn't happen, but create new block if needed
-                logger.warning("Routing Fallback: Creating new block (unexpected scenario)")
-                keywords = gpt_nano_keywords or []
-                block_id = self.storage.create_new_bridge_block(
-                    day_id=day_id,
-                    topic_label=suggested_label,
-                    keywords=keywords
-                )
-                is_new_topic = True
-            
-            # --- Update Facts with Block ID --- #
-            # Wait for fact extraction to complete (if running)
-            if fact_extraction_task:
-                logger.debug("Waiting for FactScrubber to complete")
-                print(f"    Waiting for FactScrubber to complete...")
-                extracted_facts = await fact_extraction_task
-                logger.debug(f"Extracted {len(extracted_facts)} facts")
-                print(f"    FactScrubber extracted {len(extracted_facts)} facts")
-                
-                # Update facts with final block_id
-                if extracted_facts and block_id:
-                    logger.debug(f"Linking {len(extracted_facts)} facts to block {block_id}")
-                    print(f"    Linking {len(extracted_facts)} facts to block {block_id}...")
-                    updated_count = self.storage.update_facts_block_id(turn_id, block_id)
-                    logger.debug(f"Updated {updated_count} facts with block_id")
-                    print(f"    Updated {updated_count} facts with block_id")
-            else:
-                print(f"    No fact extraction task to await")
-            
-            # === HYDRATOR: Format Context === #
-            logger.debug(f"Hydrator: Building context for block {block_id}")
-            
-            # Get ALL facts for this specific block (not keyword-filtered facts from Governor)
-            # This allows LLM to fuzzy-match vague queries like "what was that credential?"
-            block_facts = self.storage.get_facts_for_block(block_id)
-            logger.debug(f"Loaded {len(block_facts)} facts for this block")
-            
-            # Build system prompt from centralized template
-            system_prompt = prompts.CHAT_SYSTEM_PROMPT
-            
-            # Call hydrator with is_new_topic flag
-            full_prompt = self.context_hydrator.hydrate_bridge_block(
-                block_id=block_id,
-                memories=filtered_memories,
-                facts=block_facts,  
-                system_prompt=system_prompt,
-                user_message=user_query,
-                is_new_topic=is_new_topic,
-                dossiers=dossiers  
+            # 5. Hydration & LLM Generation
+            response_text, metadata_json = await self._generate_llm_response(
+                block_id, filtered_memories, user_query, is_new_topic, dossiers
             )
             
-            logger.debug(f"Full prompt length: {len(full_prompt)} chars")
-            
-            # === MAIN LLM: Generate Response === #
-            logger.info("Calling main LLM")
-            chat_response = await self.governor.api_client.query_external_api_async(full_prompt)
-            logger.debug("Response received from LLM")
-            
-            # === PARSE METADATA JSON === #
-            logger.debug("Parsing metadata")
-            metadata_json = None
-            response_text = chat_response
-            
-            # Extract JSON code block if present
-            import re
-            json_pattern = r'```json\s*(\{[^`]+\})\s*```'
-            json_match = re.search(json_pattern, chat_response, re.DOTALL)
-            
-            if json_match:
-                import json
-                try:
-                    metadata_json = json.loads(json_match.group(1))
-                    logger.debug(f"Metadata JSON extracted: {list(metadata_json.keys())}")
-                    
-                    # Strip JSON block from user-facing response
-                    response_text = re.sub(json_pattern, '', chat_response, flags=re.DOTALL).strip()
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse metadata JSON: {e}")
-            
-            # === UPDATE BRIDGE BLOCK HEADER === #
-            if metadata_json:
-                logger.info("Updating Bridge Block header")
-                try:
-                    # Update metadata in storage
-                    self.storage.update_bridge_block_metadata(block_id, metadata_json)
-                    logger.debug("Header updated successfully")
-                except Exception as e:
-                    logger.warning(f"Failed to update header: {e}", exc_info=True)
-            
-            # === APPEND TURN TO BRIDGE BLOCK === #
-            print(f"    DEBUG: Appending turn {turn_id} to block {block_id}...")
-            turn_data = {
-                "turn_id": turn_id,  # Reuse turn_id generated at start for chunking
-                "timestamp": datetime.now().isoformat(),
-                "user_message": user_query,
-                "ai_response": response_text,
-                "chunks": [{
-                    "chunk_id": chunk.chunk_id,
-                    "chunk_type": chunk.chunk_type,
-                    "text_verbatim": chunk.text_verbatim,
-                    "parent_chunk_id": chunk.parent_chunk_id,
-                    "token_count": chunk.token_count
-                } for chunk in chunks] if chunks else []
-            }
-            
-            success = self.storage.append_turn_to_block(block_id, turn_data)
-            print(f"    DEBUG: append_turn_to_block returned: {success}")
-            if not success:
-                print(f"    ERROR: Failed to append turn {turn_id} to block {block_id}")
-            else:
-                print(f"    Turn {turn_id} appended to block {block_id}")
-            
-            # === LOG AND RETURN === #
-            logger.debug(f"Response: {response_text[:200]}...")
-            
-            # Log the response
-            self.logger.info(f"LLM Response received ({len(response_text)} chars)")
-            
-            # Log to session
-            self.log_conversation_turn(user_query, response_text, session_id=session_id)
+            # 6. Persistence & State Update
+            await self._persist_chat_turn(block_id, turn_id, user_query, response_text, chunks, metadata_json, session_id)
             
             return ConversationResponse(
                 response_text=response_text,
                 status=ResponseStatus.SUCCESS,
                 detected_intent="chat",
                 detected_action="chat",
-                contexts_retrieved=len(filtered_memories),
-                sliding_window_turns=0,  # Bridge Blocks replace sliding window
-                citations_found=0,
-                context_efficiency=100.0  # Governor already filtered
+                contexts_retrieved=len(filtered_memories)
             )
             
         except ApiConnectionError as e:
             logger.error(f"Chat API connection failed: {e}", exc_info=True)
             return ConversationResponse(
-                response_text="I apologize, but I'm having trouble connecting to my brain right now. Please try again in a moment.",
+                response_text="I apologize, but I'm having trouble connecting to my brain right now.",
                 status=ResponseStatus.ERROR,
                 detected_intent="chat",
                 detected_action="chat"
             )
         except Exception as e:
             logger.error(f"Unexpected error in chat: {e}", exc_info=True)
-            error_trace = traceback.format_exc()
-            
-            fallback_response = "I'm here to chat, but I'm having trouble connecting to my chat system right now."
-            
-            # Log to persistent storage
-            self.log_conversation_turn(user_query, fallback_response)
-            
             return ConversationResponse(
-                response_text=fallback_response,
+                response_text="I'm here to chat, but I'm having trouble connecting to my chat system right now.",
                 status=ResponseStatus.ERROR,
-                detected_intent="chat",
-                detected_action="chat",
-                error_message=str(e),
-                error_traceback=error_trace
+                error_message=str(e)
             )
+
+    def _chunk_user_query(self, user_query: str, turn_id: str) -> List[Any]:
+        if not self.chunk_engine:
+            logger.warning("ChunkEngine not available, skipping chunking")
+            return []
+        chunks = self.chunk_engine.chunk_turn(text=user_query, turn_id=turn_id, span_id=None)
+        logger.debug(f"Created {len(chunks)} chunks")
+        return chunks
+
+    async def _orchestrate_retrieval(self, user_query: str, day_id: str, turn_id: str, chunks: List[Any]):
+        # Start fact extraction in parallel
+        fact_task = None
+        if self.fact_scrubber and chunks:
+            logger.debug("FactScrubber: Starting extraction in parallel")
+            fact_task = asyncio.create_task(
+                self.fact_scrubber.extract_and_save(
+                    turn_id=turn_id, message_text=user_query, chunks=chunks, span_id=None, block_id=None
+                )
+            )
+            
+        try:
+            routing_decision, memories, facts, dossiers = await self.governor.govern(user_query, day_id)
+        except RetrievalError as e:
+            logger.error(f"Critical retrieval failure: {e}. Proceeding with memory disabled.")
+            routing_decision = {'matched_block_id': None, 'is_new_topic': True, 'suggested_label': 'General Discussion'}
+            memories, facts, dossiers = [], [], []
+
+        return routing_decision, memories, facts, dossiers, fact_task
+
+    async def _execute_routing_strategy(self, routing_decision: Dict, day_id: str) -> Tuple[str, bool]:
+        matched_block_id = routing_decision.get('matched_block_id')
+        is_new = routing_decision.get('is_new_topic', False)
+        suggested_label = routing_decision.get('suggested_label', 'General Discussion')
+        
+        active_blocks = self.storage.get_active_bridge_blocks()
+        last_active_block = next((b for b in active_blocks if b.get('status') == 'ACTIVE'), None)
+        
+        if matched_block_id and last_active_block and matched_block_id == last_active_block['block_id']:
+            logger.info(f"Routing Strategy: Topic Continuation ({matched_block_id})")
+            return matched_block_id, False
+            
+        if matched_block_id and not is_new:
+            logger.info(f"Routing Strategy: Topic Resumption ({matched_block_id})")
+            if last_active_block:
+                self.storage.update_bridge_block_status(last_active_block['block_id'], 'PAUSED')
+                self.storage.generate_block_summary(last_active_block['block_id'])
+            self.storage.update_bridge_block_status(matched_block_id, 'ACTIVE')
+            return matched_block_id, False
+            
+        # New Topic
+        logger.info(f"Routing Strategy: New Topic ('{suggested_label}')")
+        if last_active_block:
+            self.storage.update_bridge_block_status(last_active_block['block_id'], 'PAUSED')
+            self.storage.generate_block_summary(last_active_block['block_id'])
+            
+        metadata = getattr(self, '_current_metadata', {})
+        keywords = metadata.get('keywords', [])
+        block_id = self.storage.create_new_bridge_block(day_id=day_id, topic_label=suggested_label, keywords=keywords)
+        return block_id, True
+
+    async def _finalize_fact_extraction(self, fact_task, turn_id: str, block_id: str):
+        if fact_task:
+            extracted_facts = await fact_task
+            if extracted_facts and block_id:
+                self.storage.update_facts_block_id(turn_id, block_id)
+
+    async def _generate_llm_response(self, block_id: str, memories: List, user_query: str, is_new_topic: bool, dossiers: List):
+        block_facts = self.storage.get_facts_for_block(block_id)
+        full_prompt = self.context_hydrator.hydrate_bridge_block(
+            block_id=block_id, memories=memories, facts=block_facts, system_prompt=prompts.CHAT_SYSTEM_PROMPT,
+            user_message=user_query, is_new_topic=is_new_topic, dossiers=dossiers
+        )
+        
+        chat_response = await self.governor.api_client.query_external_api_async(full_prompt)
+        
+        # Parse metadata JSON
+        metadata_json = None
+        response_text = chat_response
+        json_pattern = r'```json\s*(\{[^`]+\})\s*```'
+        json_match = re.search(json_pattern, chat_response, re.DOTALL)
+        
+        if json_match:
+            try:
+                import json
+                metadata_json = json.loads(json_match.group(1))
+                response_text = re.sub(json_pattern, '', chat_response, flags=re.DOTALL).strip()
+            except Exception as e:
+                logger.warning(f"Failed to parse metadata JSON: {e}")
+                
+        return response_text, metadata_json
+
+    async def _persist_chat_turn(self, block_id, turn_id, user_query, response_text, chunks, metadata_json, session_id):
+        if metadata_json:
+            self.storage.update_bridge_block_metadata(block_id, metadata_json)
+        
+        turn_data = {
+            "turn_id": turn_id,
+            "timestamp": datetime.now().isoformat(),
+            "user_message": user_query,
+            "ai_response": response_text,
+            "chunks": [self._format_chunk(c) for c in chunks] if chunks else []
+        }
+        
+        if not self.storage.append_turn_to_block(block_id, turn_data):
+            logger.error(f"Failed to append turn {turn_id} to block {block_id}")
+            
+        self.log_conversation_turn(user_query, response_text, session_id=session_id)
+
+    def _format_chunk(self, chunk: Any) -> Dict:
+        return {
+            "chunk_id": chunk.chunk_id,
+            "chunk_type": chunk.chunk_type,
+            "text_verbatim": chunk.text_verbatim,
+            "parent_chunk_id": chunk.parent_chunk_id,
+            "token_count": chunk.token_count
+        }
+
+
     
     def log_conversation_turn(self, user_msg: str, assistant_msg: str, session_id: str = "default_session",
                              keywords: List[str] = None, topics: List[str] = None, affect: str = None):
@@ -602,7 +465,7 @@ class ConversationEngine:
                 all_turns = self.storage.get_recent_turns(limit=100000)
                 total_turns = len(all_turns)
             except Exception:
-                pass
+                logger.warning("Failed to calculate total turns for memory stats", exc_info=True)
         
         window_size = 0
         if hasattr(self.sliding_window, 'turns'):

@@ -197,7 +197,7 @@ class DossierRetriever:
                     from datetime import datetime
                     dt = datetime.fromisoformat(added_at)
                     timestamp_str = dt.strftime("%m/%d/%Y %H:%M:%S")
-                except:
+                except (ValueError, TypeError):
                     timestamp_str = added_at
                 
                 formatted += f"  - {fact_text} (added: {timestamp_str})\n"

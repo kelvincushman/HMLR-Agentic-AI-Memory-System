@@ -86,7 +86,7 @@ class LatticeCrawler:
         if not self.use_vector_search or not self.embedding_storage:
             return []
         
-        print(f"    Searching gardened memory: '{query[:60]}...'")
+        logger.debug(f"Searching gardened memory: '{query[:60]}...'")
         
         try:
             # Search using embedding manager (now searches gardened_memory too)
@@ -339,7 +339,7 @@ class LatticeCrawler:
             # Try to parse as date
             try:
                 start_date = datetime.strptime(start_str, "%Y-%m-%d")
-            except:
+            except ValueError:
                 start_date = current_date  # Fallback to today
         
         # Generate day range from start_date to current_date

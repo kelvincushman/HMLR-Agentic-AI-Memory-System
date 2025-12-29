@@ -23,14 +23,10 @@ class SlidingWindow:
         self.session_id = session_id
         self.max_turns = max_turns
         
-        # Caching for the current request
-        self._cached_turns: Optional[List[ConversationTurn]] = None
-        
         # Transient sets for the current processing turn (deduplication)
+        # These are request-scoped and cleared between requests via clear_transient_state()
         self._loaded_turn_ids: Set[str] = set()
         self._loaded_keyword_ids: Set[str] = set()
-        self._loaded_task_ids: Set[str] = set()
-        self._loaded_summary_ids: Set[str] = set()
         self._loaded_task_ids: Set[str] = set()
         self._loaded_summary_ids: Set[str] = set()
 
@@ -42,26 +38,22 @@ class SlidingWindow:
 
     def clear_transient_state(self):
         """Clear session-level tracking (deduplication sets)."""
-        self._cached_turns = None
         self._loaded_turn_ids.clear()
         self._loaded_keyword_ids.clear()
-        self._loaded_task_ids.clear()
-        self._loaded_summary_ids.clear()
         self._loaded_task_ids.clear()
         self._loaded_summary_ids.clear()
 
     @property
     def turns(self) -> List[ConversationTurn]:
-        """Fetch the most recent turns for the active session (cached)."""
-        if self._cached_turns is not None:
-            return self._cached_turns
-            
+        """Fetch the most recent turns for the active session.
+        
+        Always queries the database to ensure consistency across
+        multiple workers and LangGraph nodes. No caching.
+        """
         if not self.storage or not self.session_id:
             return []
         
-        # Always query the database to ensure we have the latest state
-        self._cached_turns = self.storage.get_session_history(self.session_id, limit=self.max_turns)
-        return self._cached_turns
+        return self.storage.get_session_history(self.session_id, limit=self.max_turns)
 
     def add_turn(self, turn: ConversationTurn) -> None:
         """

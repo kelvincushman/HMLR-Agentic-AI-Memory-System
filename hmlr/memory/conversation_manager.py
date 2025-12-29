@@ -90,7 +90,8 @@ class ConversationManager:
         summary: str = None,
         affect: str = None,
         affect_intensity: float = None,
-        affect_confidence: float = None
+        affect_confidence: float = None,
+        **kwargs
     ) -> ConversationTurn:
         """
         Log a conversation turn to storage with lineage tracking.
@@ -122,10 +123,8 @@ class ConversationManager:
             session_id = generate_session_id()
             logger.info(f"   Generated new session ID: {session_id}")
         
-        # Get turn sequence for this session from DB (Stateless)
-        cursor = self.storage.conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM metadata_staging WHERE session_id = ?", (session_id,))
-        turn_sequence = cursor.fetchone()[0]
+        # Get turn sequence for this session from Storage (Stateless)
+        turn_sequence = self.storage.get_turn_count(session_id)
         
         # Generate unique turn ID
         turn_id = generate_turn_id()

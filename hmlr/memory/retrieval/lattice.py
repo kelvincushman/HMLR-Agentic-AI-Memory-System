@@ -122,10 +122,15 @@ class TheGovernor:
         self.crawler = crawler
         self.dossier_retriever = dossier_retriever
         
-        # Default to package-relative path
+        # Default to package-relative path, check env variable override
         if profile_path is None:
             from pathlib import Path
-            profile_path = str(Path(__file__).parent.parent.parent / "config" / "user_profile_lite.json")
+            # Check for environment variable override (for test isolation)
+            env_profile_path = os.environ.get('USER_PROFILE_PATH')
+            if env_profile_path:
+                profile_path = env_profile_path
+            else:
+                profile_path = str(Path(__file__).parent.parent.parent / "config" / "user_profile_lite.json")
         
         self.profile = self._load_profile(profile_path)
 

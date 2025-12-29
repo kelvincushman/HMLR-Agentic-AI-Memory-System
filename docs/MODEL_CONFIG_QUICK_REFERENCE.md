@@ -1,6 +1,6 @@
 # Model Config Quick Reference
 
-## 🎯 Hierarchical Configuration System
+##  Hierarchical Configuration System
 
 ### The Key Concept
 
@@ -20,7 +20,7 @@ You have **ONE global knob** (`DEFAULT_MODEL`) that controls the entire stack, p
 
 ---
 
-## 📖 Usage Examples
+##  Usage Examples
 
 ### Example 1: Everything Fast & Cheap
 **Goal:** Use `gpt-4.1-mini` everywhere
@@ -54,7 +54,7 @@ python main.py
 ```
 
 **Result:**
-- Main conversation: `gpt-4.1-pro` @ 0.6 temp ✨ (premium model, natural style)
+- Main conversation: `gpt-4.1-pro` @ 0.6 temp  (premium model, natural style)
 - Lattice operations: `gpt-4.1-mini` @ 0.1 temp (fast, deterministic)
 - Synthesis/facts: `gpt-4.1-mini` @ 0.1 temp (fast, deterministic)
 - Metadata extraction: `gpt-4.1-mini` @ 0.1 temp (fast, deterministic)
@@ -99,7 +99,7 @@ python main.py
 
 ---
 
-## 🔧 In-Code Override (for tests)
+##  In-Code Override (for tests)
 
 ```python
 from hmlr.core.model_config import ModelConfig
@@ -113,7 +113,7 @@ ModelConfig.SYNTHESIS_MODEL = "mock-synthesis-model"
 
 ---
 
-## 🔍 How It Works Under the Hood
+##  How It Works Under the Hood
 
 ### The Old Way (Hardcoded)
 ```python
@@ -149,7 +149,7 @@ def get_synthesis_model(cls) -> str:
 
 ---
 
-## 🌍 Environment Variables Reference
+##  Environment Variables Reference
 
 | Variable | Default | Affects | Use Case |
 |----------|---------|---------|----------|
@@ -185,7 +185,7 @@ def get_synthesis_model(cls) -> str:
 
 ---
 
-## 🚀 Deployment Scenarios
+##  Deployment Scenarios
 
 ### Production (Cost-Optimized)
 ```bash

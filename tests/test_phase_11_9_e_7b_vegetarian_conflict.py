@@ -70,12 +70,19 @@ async def test_7b_vegetarian_conflict_e2e(test_db_path):
     os.environ['COGNITIVE_LATTICE_DB'] = test_db_path
     print(f"📦 Using fresh database: {test_db_path}")
     
-    # Create EMPTY user profile
+    # Create EMPTY user profile in temp location
+    # IMPORTANT: Use temp directory for test isolation
     import json
     from pathlib import Path
+    import tempfile
     
-    profile_path = Path("config/user_profile_lite.json")
-    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    # Create temp profile file
+    temp_profile_dir = Path(test_db_path).parent
+    profile_path = temp_profile_dir / "user_profile_lite.json"
+    
+    # Set environment variable so Scribe writes to test profile
+    os.environ['USER_PROFILE_PATH'] = str(profile_path)
+    print(f"🔧 Using isolated profile: {profile_path}")
     
     # Start with empty profile (no constraints)
     profile_data = {
@@ -140,30 +147,45 @@ async def test_7b_vegetarian_conflict_e2e(test_db_path):
     responses.append(response1)
     print(f"\nAssistant: {response1.to_console_display()}")
     
-    # Give Scribe time to run in background and update profile
-    # Scribe runs asynchronously, so we need to wait for it to complete
+    # ========================================================================
+    # AWAIT SCRIBE COMPLETION
+    # ========================================================================
+    # The Scribe runs as a background task - we need to wait for it to actually finish
     print("\n⏳ Waiting for Scribe to process constraint extraction...")
-    await asyncio.sleep(2.0)  # Increased wait time for Scribe
+    
+    # Get the background manager and wait for all tasks to complete
+    if hasattr(conversation_engine, 'background_manager'):
+        await conversation_engine.background_manager.shutdown(timeout=10.0)
+        print("✅ Scribe background task completed")
+    else:
+        # Fallback: just wait if no background manager
+        await asyncio.sleep(5.0)
+        print("⚠️  No background manager - used fallback wait")
     
     # ========================================================================
-    # CLEAR MEMORY TO ISOLATE PROFILE TEST (DO NOT GARDEN)
+    # CLOSE BRIDGE BLOCK TO ISOLATE PROFILE TEST
     # ========================================================================
     print("\n" + "="*80)
-    print("ISOLATING PROFILE: Clearing Sliding Window")
+    print("ISOLATING PROFILE: Closing Bridge Block")
     print("="*80)
-    print("⚠️  NOT gardening Turn 1 to prevent chunks from being searchable")
-    print("   We only want to test Scribe → Profile → LLM, not memory retrieval")
+    
+    # Get the active bridge block and close it
+    active_blocks = storage.get_active_bridge_blocks()
+    if active_blocks:
+        for block in active_blocks:
+            block_id = block.get('block_id')
+            if block_id:
+                # Mark as COMPLETED so it won't be loaded as "active" in Turn 2
+                storage.update_bridge_block_status(block_id, 'COMPLETED', exit_reason='test_isolation')
+                print(f"✅ Closed bridge block: {block_id}")
+    else:
+        print("⚠️  No active bridge blocks to close")
     
     # Clear the sliding window so Turn 2 can't access Turn 1 from recent memory
     if hasattr(components.sliding_window, 'clear'):
         components.sliding_window.clear()
-    
-    # Manually clear if lists exist (legacy support)
-    if hasattr(components.sliding_window, 'turns') and isinstance(components.sliding_window.turns, list):
-         components.sliding_window.turns.clear()
-    
     print("✅ Sliding window cleared")
-    print("   Turn 2 will ONLY have access to user profile, not past memory")
+    print("   Turn 2 will ONLY have access to user profile, not past memory or bridge blocks")
     
     # ========================================================================
     # VERIFY SCRIBE EXTRACTED CONSTRAINT
@@ -250,17 +272,24 @@ async def test_7b_vegetarian_conflict_e2e(test_db_path):
     # ASSERTIONS
     # ========================================================================
     
-    # Note: Even if Scribe didn't extract the constraint, the test can still pass
-    # if the LLM correctly responds based on context. But we should warn.
+    # Now that we properly close the bridge block, the ONLY way the LLM
+    # can know about vegetarianism is from the user profile.
+    # If Scribe didn't extract it, the test should fail.
+    
     if vegetarian_constraint is None:
-        print(f"\n⚠️  WARNING: Scribe extraction test failed, but LLM response was correct")
-        print(f"   This suggests the constraint was in context but not persisted to profile")
+        print(f"\n❌ CRITICAL: Scribe did NOT extract vegetarian constraint!")
+        print(f"   The LLM response is based on something other than the profile.")
+        print(f"   Check if bridge blocks are properly isolated.")
     
     assert mentions_vegetarian, \
         "❌ FAILURE: LLM did not acknowledge vegetarian constraint"
     
     assert denies_steak or not encourages_steak, \
         "❌ FAILURE: LLM did not warn against eating steak despite vegetarian constraint"
+    
+    # NEW: Also assert that Scribe extracted the constraint
+    assert vegetarian_constraint is not None, \
+        "❌ FAILURE: Scribe did not extract vegetarian constraint to profile"
     
     # ========================================================================
     # SUCCESS SUMMARY
@@ -271,13 +300,14 @@ async def test_7b_vegetarian_conflict_e2e(test_db_path):
     print("\nValidated:")
     print("  ✓ Turn 1: User declared vegetarian constraint")
     print("  ✓ Scribe extracted constraint to user profile")
-    print("  ✓ Sliding window cleared (Turn 1 NOT gardened)")
+    print("  ✓ Bridge block closed (Turn 1 isolated)")
+    print("  ✓ Sliding window cleared")
     print("  ✓ Turn 2: New bridge block created")
     print("  ✓ Profile constraint loaded into Turn 2 context")
     print("  ✓ LLM acknowledged constraint and denied eating steak")
     print("\nThis proves:")
     print("  → Scribe successfully extracts dietary constraints")
-    print("  → User profile persists independently of memory")
+    print("  → User profile persists independently of memory/bridge blocks")
     print("  → Profile constraints are enforced by LLM")
     print("  → Scribe → Profile → LLM pathway works correctly")
     print("="*80)

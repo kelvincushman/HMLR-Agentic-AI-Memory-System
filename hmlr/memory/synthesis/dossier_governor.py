@@ -22,6 +22,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from hmlr.core.model_config import model_config
+from hmlr.memory.id_generator import generate_id
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class DossierGovernor:
     - Full provenance: Track every operation for debugging and analysis
     """
     
-    def __init__(self, storage, dossier_storage, llm_client, id_generator):
+    def __init__(self, storage, dossier_storage, llm_client):
         """
         Initialize dossier governor.
         
@@ -49,12 +50,10 @@ class DossierGovernor:
             storage: Storage instance (for dossier CRUD)
             dossier_storage: DossierEmbeddingStorage instance (for vector search)
             llm_client: LLM client for routing decisions and summaries
-            id_generator: ID generator for creating unique IDs
         """
         self.storage = storage
         self.dossier_storage = dossier_storage
         self.llm_client = llm_client
-        self.id_generator = id_generator
         logger.info("DossierGovernor initialized")
     
     async def process_fact_packet(self, fact_packet: Dict[str, Any]) -> str:
@@ -341,7 +340,7 @@ Decision:"""
                 source_turn_id = None
             
             if not fact_id:
-                fact_id = self.id_generator.generate_id("fact")
+                fact_id = generate_id("fact")
             
             # Store fact in database
             success = self.storage.add_fact_to_dossier(
@@ -361,7 +360,7 @@ Decision:"""
             self.dossier_storage.save_fact_embedding(fact_id, dossier_id, fact_text)
             
             # 3. Log provenance
-            prov_id = self.id_generator.generate_id("prov")
+            prov_id = generate_id("prov")
             self.storage.add_provenance_entry(
                 dossier_id=dossier_id,
                 operation="fact_added",
@@ -397,7 +396,7 @@ Decision:"""
         Returns:
             New dossier ID
         """
-        dossier_id = self.id_generator.generate_id("dos")
+        dossier_id = generate_id("dos")
         logger.info(f"Creating new dossier: {dossier_id} - {title}")
         
         # 1. Generate summaries
@@ -432,7 +431,7 @@ Decision:"""
                 source_turn_id = None
             
             if not fact_id:
-                fact_id = self.id_generator.generate_id("fact")
+                fact_id = generate_id("fact")
             
             self.storage.add_fact_to_dossier(
                 dossier_id=dossier_id,
@@ -449,7 +448,7 @@ Decision:"""
             logger.debug(f"  Added fact {fact_id}: {fact_text[:50]}...")
         
         # 5. Log provenance
-        prov_id = self.id_generator.generate_id("prov")
+        prov_id = generate_id("prov")
         self.storage.add_provenance_entry(
             dossier_id=dossier_id,
             operation="created",
@@ -509,7 +508,7 @@ UPDATED SUMMARY:"""
             self.storage.update_dossier_summary(dossier_id, new_summary)
             
             # Log provenance
-            prov_id = self.id_generator.generate_id("prov")
+            prov_id = generate_id("prov")
             self.storage.add_provenance_entry(
                 dossier_id=dossier_id,
                 operation="summary_updated",

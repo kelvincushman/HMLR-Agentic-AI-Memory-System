@@ -4,7 +4,7 @@ HMLR supports multiple LLM providers out of the box. The infrastructure is alrea
 
 ---
 
-## 🎯 Supported Providers
+##  Supported Providers
 
 | Provider | API_PROVIDER Value | API Key Env Var | Example Models | Status |
 |----------|-------------------|-----------------|----------------|--------|
@@ -12,14 +12,14 @@ HMLR supports multiple LLM providers out of the box. The infrastructure is alrea
 | **Google Gemini** | `gemini` | `GEMINI_API_KEY` | `gemini-3-flash-preview`, `gemini-3-pro-preview` | ✅ Fully Supported |
 | **xAI Grok** | `grok` | `XAI_API_KEY` | `grok-4-1-fast-non-reasoning`, `grok-4-1-fast-reasoning` | ✅ Fully Supported |
 | **Anthropic Claude** | `anthropic` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5-20251001`, `claude-sonnet-4-5-20250929` | ✅ Fully Supported |
-| **Local/Ollama** | `openai` | N/A | `llama3.2:3b`, `mistral:7b` | ⚙️ Via OpenAI-compatible API |
+| **Local/Ollama** | `openai` | N/A | `llama3.2:3b`, `mistral:7b` |  Via OpenAI-compatible API |
 | **DeepSeek** | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat`, `deepseek-reasoner` | ⚠️ Not Yet Implemented |
 
 **Note:** Providers marked ⚠️ require adding support to `external_api_client.py`. PRs welcome!
 
 ---
 
-## 📖 Configuration Examples
+##  Configuration Examples
 
 ### OpenAI (Default)
 
@@ -121,7 +121,7 @@ export HMLR_DEFAULT_MODEL="llama3.2:3b"
 
 ---
 
-## 🔀 Current Limitation: Single Provider per Session
+##  Current Limitation: Single Provider per Session
 
 **What Works:**
 - One provider for all operations (e.g., all OpenAI or all Gemini)
@@ -141,7 +141,7 @@ WORKER_PROVIDER = "gemini"
 
 ---
 
-## 🧪 Testing Different Providers
+##  Testing Different Providers
 
 ### Quick Test Script
 
@@ -167,7 +167,7 @@ print(f"Response: {response}")
 
 ---
 
-## 🧠 Advanced: Thinking/Reasoning Models
+##  Advanced: Thinking/Reasoning Models
 
 Some newer models support explicit reasoning/thinking controls. These are **optional** and only needed if using thinking models.
 
@@ -234,7 +234,7 @@ export HMLR_MAIN_REASONING_EFFORT="7"
 
 ---
 
-## 🎛️ Advanced Model Parameters
+##  Advanced Model Parameters
 
 Beyond thinking/reasoning, you can tune other model behaviors:
 
@@ -301,7 +301,7 @@ export HMLR_DEFAULT_FREQUENCY_PENALTY="0.0"  # No penalties
 
 ---
 
-## 💰 Cost Optimization Strategies
+##  Cost Optimization Strategies
 
 ### Strategy 1: Cheap Provider Everywhere
 ```bash
@@ -325,7 +325,7 @@ export HMLR_DEFAULT_MODEL="llama3.2:3b"       # Free!
 
 ---
 
-## 🛠️ Provider Dependencies
+##  Provider Dependencies
 
 Each provider requires specific packages:
 
@@ -353,7 +353,7 @@ ollama serve
 
 ---
 
-## 📋 Environment Variables Reference
+##  Environment Variables Reference
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
@@ -385,7 +385,7 @@ python -c "from hmlr.core.external_api_client import ExternalAPIClient; from hml
 
 ---
 
-## 🚀 Example: Complete Provider Switch
+##  Example: Complete Provider Switch
 
 ### From OpenAI to Google Gemini
 
@@ -414,8 +414,8 @@ python -c "from hmlr.core.external_api_client import ExternalAPIClient; from hml
 
 4. **Verify in logs:**
    ```
-   📦 API Provider: gemini
-   🤖 Model: gemini-3-flash-preview
+    API Provider: gemini
+    Model: gemini-3-flash-preview
    ```
 
 ---
@@ -424,7 +424,7 @@ python -c "from hmlr.core.external_api_client import ExternalAPIClient; from hml
 
 ---
 
-## 🔧 Adding New Providers (For Contributors)
+##  Adding New Providers (For Contributors)
 
 Want to add Anthropic, DeepSeek, or another provider? Here's how:
 

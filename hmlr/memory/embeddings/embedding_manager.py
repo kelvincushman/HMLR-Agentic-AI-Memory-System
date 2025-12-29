@@ -19,6 +19,10 @@ except ImportError:
     print("sentence-transformers not installed. Install with: pip install sentence-transformers")
 
 
+# Global model cache to avoid reloading models
+_MODEL_CACHE = {}
+
+
 class EmbeddingManager:
     """
     Manages vector embeddings for conversation turns.
@@ -39,7 +43,14 @@ class EmbeddingManager:
                 "sentence-transformers required. Install with: pip install sentence-transformers"
             )
         
-        # Check for GPU availability
+        # Check if model already loaded in cache
+        if self.model_name in _MODEL_CACHE:
+            cached = _MODEL_CACHE[self.model_name]
+            self.model = cached['model']
+            self.device = cached['device']
+            return
+        
+        # Load model for first time
         import torch
         device = 'cpu'
         gpu_info = "CPU only"
@@ -49,7 +60,7 @@ class EmbeddingManager:
                 device = 'cuda'
                 gpu_name = torch.cuda.get_device_name(0)
                 gpu_info = f"GPU ({gpu_name})"
-                print(f"🚀 GPU detected: {gpu_name}", flush=True)
+                print(f" GPU detected: {gpu_name}", flush=True)
             else:
                 print(f"⚠️  No GPU detected - using CPU", flush=True)
                 print(f"   To enable GPU: pip install torch --index-url https://download.pytorch.org/whl/cu121", flush=True)
@@ -57,9 +68,15 @@ class EmbeddingManager:
             print(f"⚠️  GPU check failed: {e} - using CPU", flush=True)
         
         print(f"Loading embedding model: {self.model_name} on {gpu_info}...", flush=True)
-        self.model = SentenceTransformer(self.model_name, device=device)
+        self.model = SentenceTransformer(self.model_name, device=device, local_files_only=True)
         self.device = device
         print(f"✓ Model loaded: {self.model_name} ({self.dimension}D) on {device.upper()}", flush=True)
+        
+        # Cache for future instances
+        _MODEL_CACHE[self.model_name] = {
+            'model': self.model,
+            'device': self.device
+        }
     
     def encode(self, text: str) -> np.ndarray:
         """

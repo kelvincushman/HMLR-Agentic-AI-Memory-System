@@ -120,7 +120,13 @@ class Scribe:
                     logger.info(f"Scribe detected {len(updates)} profile updates: {[u.get('key') for u in updates]}")
                     self.profile_manager.update_profile_db(updates)
             else:
-                logger.warning(f"Scribe response did not contain valid JSON: {response_text[:100]}...")
+                # LLM sometimes returns "COMPLIANT" or other text when no updates needed
+                # This is not an error, just means nothing to save
+                response_lower = response_text.strip().lower()
+                if response_lower in ('compliant', 'no updates', 'none', ''):
+                    logger.debug(f"Scribe: No profile updates needed")
+                else:
+                    logger.debug(f"Scribe response (no JSON): {response_text[:100]}")
             
         except Exception as e:
             logger.error(f"Scribe agent failed: {e}", exc_info=True)

@@ -558,6 +558,20 @@ class Storage:
     # Fact Store & Daily Ledger Query Methods
     # ========================================================================
     
+    def get_turn_count(self, session_id: str) -> int:
+        """
+        Get the number of turns logged for a specific session.
+        
+        Args:
+            session_id: Unique session identifier
+            
+        Returns:
+            Number of turns in the session
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM metadata_staging WHERE session_id = ?", (session_id,))
+        return cursor.fetchone()[0]
+    
     def query_fact_store(self, key: str) -> Optional[Dict[str, Any]]:
         """
         Query fact_store for exact keyword match 

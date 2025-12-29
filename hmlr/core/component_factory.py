@@ -9,8 +9,8 @@ factory to get a consistent, properly-wired set of components.
 
 import os
 import logging
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Dict
 from hmlr.core.config import config
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,6 @@ from hmlr.memory.synthesis.user_profile_manager import UserProfileManager
 from hmlr.memory.synthesis.scribe import Scribe
 from hmlr.memory.synthesis.dossier_governor import DossierGovernor
 from hmlr.memory.dossier_storage import DossierEmbeddingStorage
-from hmlr.memory.id_generator import IDGenerator
 from hmlr.memory.chunking.chunk_engine import ChunkEngine
 from hmlr.memory.fact_scrubber import FactScrubber
 
@@ -74,6 +73,17 @@ class ComponentBundle:
     
     # Session state
     previous_day: str
+    
+    # Health status for LangGraph integration
+    health_status: Dict[str, bool] = field(default_factory=dict)
+    
+    def is_fully_operational(self) -> bool:
+        """Check if all critical components are operational."""
+        return all(self.health_status.values())
+    
+    def get_degraded_components(self) -> list:
+        """Return list of component names that failed to initialize."""
+        return [name for name, healthy in self.health_status.items() if not healthy]
 
 
 class ComponentFactory:
@@ -155,10 +165,10 @@ class ComponentFactory:
         logger.info(f"Intent Analyzer: {mode_desc}")
         logger.info(f"Context Hydrator: {model_config.CONTEXT_BUDGET_TOKENS} token budget")
         
-        # === User Profile & Scribe === #
-        logger.info("Initializing user profile and scribe...")
+        # === User Profile === #
+        logger.info("Initializing user profile manager...")
         user_profile_manager = UserProfileManager()
-        logger.info(f"User profile and scribe ready")
+        logger.info(f"User profile manager ready")
         
         # === External Services === #
         logger.info("Initializing external services...")
@@ -192,12 +202,10 @@ class ComponentFactory:
             
             # Initialize dossier governor (write-side)
             if external_api:
-                id_generator = IDGenerator()
                 dossier_governor = DossierGovernor(
                     storage=storage,
                     dossier_storage=dossier_storage,
-                    llm_client=external_api,
-                    id_generator=id_generator
+                    llm_client=external_api
                 )
                 logger.info(f"Dossier governor initialized")
             else:
@@ -233,7 +241,25 @@ class ComponentFactory:
         else:
             logger.warning(f"FactScrubber is offline (no API)")
         
-        logger.info("All components initialized successfully")
+        # Build health status for LangGraph integration
+        health_status = {
+            'storage': storage is not None,
+            'external_api': external_api is not None,
+            'governor': governor is not None,
+            'scribe': scribe is not None,
+            'dossier_governor': dossier_governor is not None,
+            'dossier_retriever': dossier_retriever is not None,
+            'fact_scrubber': fact_scrubber is not None,
+            'crawler': crawler is not None,
+            'embedding_storage': embedding_storage is not None,
+        }
+        
+        # Log health summary
+        degraded = [k for k, v in health_status.items() if not v]
+        if degraded:
+            logger.warning(f"Components offline: {', '.join(degraded)}")
+        else:
+            logger.info("All components initialized successfully")
         
         return ComponentBundle(
             storage=storage,
@@ -252,11 +278,12 @@ class ComponentFactory:
             chunk_engine=chunk_engine,
             fact_scrubber=fact_scrubber,
             embedding_storage=embedding_storage,
-            previous_day=previous_day
+            previous_day=previous_day,
+            health_status=health_status
         )
     
     @staticmethod
-    def create_conversation_engine(components: ComponentBundle):
+    def create_conversation_engine(components: ComponentBundle, raise_on_error: bool = False):
         """
         Create a ConversationEngine from a ComponentBundle.
         
@@ -265,6 +292,9 @@ class ComponentFactory:
         
         Args:
             components: ComponentBundle from create_all_components()
+            raise_on_error: If True, exceptions propagate instead of returning
+                          ConversationResponse with ERROR status. Set True for
+                          LangGraph integration.
         
         Returns:
             Initialized ConversationEngine
@@ -287,7 +317,8 @@ class ComponentFactory:
             chunk_engine=components.chunk_engine,
             fact_scrubber=components.fact_scrubber,
             embedding_storage=components.embedding_storage,
-            previous_day=components.previous_day
+            previous_day=components.previous_day,
+            raise_on_error=raise_on_error
         )
         
         logger.info("ConversationEngine initialized")

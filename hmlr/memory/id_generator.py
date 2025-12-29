@@ -25,6 +25,23 @@ from typing import Optional, Dict, Tuple, Literal
 # ID GENERATION FUNCTIONS
 # ============================================================================
 
+def generate_id(prefix: str) -> str:
+    """
+    Generate a unique ID with the given prefix.
+    
+    Format: {prefix}_{timestamp}_{hash}
+    Example: dos_20251006_143022_abc123
+    
+    Args:
+        prefix: ID prefix (e.g., "dos", "fact", "prov")
+        
+    Returns:
+        Unique ID string
+    """
+    ts = _format_timestamp()
+    hash_part = _generate_hash()
+    return f"{prefix}_{ts}_{hash_part}"
+
 def _generate_hash(length: int = 6) -> str:
     """
     Generate a short random hash for uniqueness.
@@ -619,40 +636,3 @@ if __name__ == "__main__":
     
     print("\n🎉 All ID generation tests passed!")
     print("=" * 60)
-
-
-# ============================================================================
-# ID GENERATOR CLASS (for dependency injection)
-# ============================================================================
-
-class IDGenerator:
-    """
-    Class wrapper for ID generation functions.
-    Provides dependency injection interface for components that need ID generation.
-    """
-    
-    def generate_id(self, prefix: str) -> str:
-        """
-        Generate a unique ID with the given prefix.
-        
-        Args:
-            prefix: ID prefix (e.g., "dos" for dossier, "fact" for fact, "prov" for provenance)
-        
-        Returns:
-            Unique ID string in format: {prefix}_{timestamp}_{hash}
-        """
-        timestamp = _format_timestamp()
-        hash_val = _generate_hash(6)
-        return f"{prefix}_{timestamp}_{hash_val}"
-    
-    def generate_turn_id(self, timestamp: Optional[datetime] = None) -> str:
-        """Generate turn ID"""
-        return generate_turn_id(timestamp)
-    
-    def generate_session_id(self, timestamp: Optional[datetime] = None) -> str:
-        """Generate session ID"""
-        return generate_session_id(timestamp)
-    
-    def generate_day_id(self, date: Optional[datetime] = None) -> str:
-        """Generate day ID"""
-        return generate_day_id(date)

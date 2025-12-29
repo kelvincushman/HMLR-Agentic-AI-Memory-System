@@ -51,12 +51,9 @@ class ExternalAPIClient:
         self.api_provider = api_provider
         self.api_key = self._load_api_key(api_key)
         self.base_url = self._get_base_url()
-        # Cache available models for this API key (used for graceful fallbacks)
-        try:
-            self.available_models = self._fetch_available_models()
-        except Exception as e:
-            logger.warning(f"Failed to fetch available models for {api_provider}: {e}", exc_info=True)
-            self.available_models = []
+        # Fetch available models - failure here should propagate
+        # so LangGraph/callers know immediately if API is misconfigured
+        self.available_models = self._fetch_available_models()
         
     def _load_api_key(self, provided_key: Optional[str] = None) -> str:
         """Load API key from argument or environment"""

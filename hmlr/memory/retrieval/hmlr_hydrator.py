@@ -64,9 +64,9 @@ class Hydrator:
             active_block, inactive_blocks = self._identify_active_block(bridge_blocks, query)
             
             # Debug
-            print(f"[HYDRATOR] Active block: {active_block['block_id'] if active_block else None}")
-            print(f"[HYDRATOR] Inactive blocks: {[b['block_id'] for b in inactive_blocks]}")
-            print(f"[HYDRATOR] Query: {query}")
+            logger.debug(f"Active block: {active_block['block_id'] if active_block else None}")
+            logger.debug(f"Inactive blocks: {[b['block_id'] for b in inactive_blocks]}")
+            logger.debug(f"Query: {query}")
             
             # Hydrate active block (full conversation turns)
             if active_block:

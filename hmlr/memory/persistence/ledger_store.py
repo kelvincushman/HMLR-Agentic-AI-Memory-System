@@ -87,7 +87,7 @@ class LedgerStore:
         """
         Load complete Bridge Block including turns fetched from normalized table.
         """
-        print(f"    DEBUG: ledger_store.get_bridge_block_full() called for block_id={block_id}")
+        logger.debug(f"get_bridge_block_full() called for block_id={block_id}")
         cursor = conn.cursor()
         cursor.execute("""
             SELECT content_json, status, created_at, updated_at
@@ -114,9 +114,9 @@ class LedgerStore:
                 ORDER BY timestamp ASC
             """, (block_id,))
             
-            print(f"    DEBUG: Querying ledger_turns for block_id={block_id}...")
+            logger.debug(f"Querying ledger_turns for block_id={block_id}")
             rows = cursor.fetchall()
-            print(f"    DEBUG: Query returned {len(rows)} rows")
+            logger.debug(f"Query returned {len(rows)} rows")
             
             turns = []
             for t_row in rows:
@@ -243,7 +243,7 @@ class LedgerStore:
             cursor.execute("PRAGMA wal_checkpoint(PASSIVE);")
             cursor.execute("SELECT COUNT(*) FROM ledger_turns WHERE block_id = ?", (block_id,))
             turn_count = cursor.fetchone()[0]
-            print(f"    Appended turn {turn.get('turn_id')} to block {block_id} (verified {turn_count} turns in DB)")
+            logger.debug(f"Appended turn {turn.get('turn_id')} to block {block_id} (verified {turn_count} turns in DB)")
             return True
         except Exception as e:
             logger.error(f"Failed to append turn to block {block_id}: {e}", exc_info=True)

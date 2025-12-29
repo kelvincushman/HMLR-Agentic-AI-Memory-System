@@ -8,7 +8,7 @@ Design Philosophy:
 - Models and temperature use fallback chains for flexibility
 - Environment variables override all defaults
 - Multi-provider support: Works with OpenAI ✅, Google Gemini ✅, xAI Grok ✅, Anthropic Claude ✅
-- Coming Soon: DeepSeek ⚠️, Local Ollama ⚙️
+- Coming Soon: DeepSeek ⚠️, Local Ollama 
 
 Usage:
     from hmlr.core.model_config import model_config
@@ -78,7 +78,7 @@ class ModelConfig:
     # - xAI ✅: "grok-2-latest", "grok-beta"
     # - Anthropic ⚠️: "claude-3-5-sonnet-20241022", "claude-3-7-sonnet-20250219" (not yet in external_api_client.py)
     # - DeepSeek ⚠️: "deepseek-chat", "deepseek-reasoner" (not yet in external_api_client.py)
-    # - Local ⚙️: "ollama/llama3.2:3b", "ollama/mistral:7b" (via OpenAI-compatible API)
+    # - Local : "ollama/llama3.2:3b", "ollama/mistral:7b" (via OpenAI-compatible API)
     #
     # Note: Set API_PROVIDER in config.py to match your model choice
     # To add new providers: Update external_api_client.py with provider-specific API calls
@@ -118,14 +118,14 @@ class ModelConfig:
     
     # ===== EMBEDDING MODELS =====
     # Sentence transformer model for generating embeddings
-    # Decision: Standardized on bge-large-en-v1.5 for better quality
+    # Decision: See the readme in tests/RAG_engine_tests for model comparison
     EMBEDDING_MODEL_NAME: str = os.getenv(
         "HMLR_EMBEDDING_MODEL", 
-        "BAAI/bge-large-en-v1.5"  # 1024D, high quality
+        "BAAI/bge-small-en-v1.5"  
     )
     
     # Embedding dimension (must match model)
-    EMBEDDING_DIMENSION: int = int(os.getenv("HMLR_EMBEDDING_DIM", "1024"))
+    EMBEDDING_DIMENSION: int = int(os.getenv("HMLR_EMBEDDING_DIM", "384"))
     
     # ===== TEMPERATURE SETTINGS (Hierarchical like models) =====
     # Default temperature for all operations (if not overridden)

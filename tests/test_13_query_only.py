@@ -52,12 +52,6 @@ async def test_query_against_existing_db(query: str = None):
 
     os.environ['COGNITIVE_LATTICE_DB'] = str(test_db_path)
 
-    import logging
-    logging.basicConfig(level=logging.DEBUG, format='%(name)s - %(levelname)s - %(message)s')
-    logging.getLogger('hmlr.memory.synthesis.dossier_governor').setLevel(logging.DEBUG)
-    logging.getLogger('hmlr.memory.retrieval.lattice').setLevel(logging.DEBUG)
-    logging.getLogger('hmlr.memory.retrieval.crawler').setLevel(logging.DEBUG)
-
     factory = ComponentFactory()
     components = factory.create_all_components()
     engine = factory.create_conversation_engine(components)
