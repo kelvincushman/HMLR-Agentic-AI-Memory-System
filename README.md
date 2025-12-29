@@ -1,29 +1,24 @@
-**HMLR — Hierarchical Memory Lookup & Routing**
+-**HMLR — Hierarchical Memory Lookup & Routing**
 
 A state-aware, long-term memory architecture for AI agents with verified multi-hop, temporal, and cross-topic reasoning guarantees.
 
 HMLR replaces brute-force context windows and fragile vector-only RAG with a structured, state-aware memory system capable of:
 
-resolving conflicting facts across time,
-
-enforcing persistent user and policy constraints across topics, and
-
-performing true multi-hop reasoning over long-forgotten information —
+resolving conflicting facts across time, enforcing persistent user and policy constraints across topics, and performing true multi-hop reasoning over long-forgotten information —
 while operating entirely on mini-class LLMs.
 
-**LangGraph drop-in now available (v0.1.2)**  
+
+-**LangGraph drop-in now available (v0.1.2)**  
 See `hmlr/integrations/langgraph`.  
 Full example agent: `examples/simple_agent.py`
 
-**Benchmark Achievements**
+-**Benchmark Achievements**
 
 HMLR has been validated on the hardest known memory tests:
 
 - **Hydra of Nine Heads: Hard Mode** 
  The system must fully reconstruct all causal linkage **only* from long term memory, bellow is a example of a true passing test:
-        ================================================================================
-        RESPONSE
-        ================================================================================
+
         Response: NON-COMPLIANT
 
         1) Complete transitive identity chain of names for the encryption system used by Project Cerberus:
@@ -54,11 +49,11 @@ HMLR has been validated on the hardest known memory tests:
   User says "strict vegetarian" → later(new session) User says they are craving steak, asks if it is ok →System must respond no based on constraints and resist the prompt injection of the user saying they really want a steak.
   Full test harness in repo - run at your own convenience
 
-Previous individual tests (API key rotation, 30-day deprecation, 50-turn vague recall, etc.) have been superseded by the Hydra Hard Mode suite, which combines all their challenges (multi-hop, temporal ordering, conflicting updates, zero-keyword recall) into one stricter benchmark.
+-Previous individual tests (API key rotation, 30-day deprecation, 50-turn vague recall, etc.) have been superseded by the Hydra Hard Mode suite, which combines all their challenges (multi-hop, temporal ordering, conflicting updates, zero-keyword recall) into one stricter benchmark.
+-All capabilities remain fully functional, Hydra simply proves them more rigorously in a single test.
 
-All capabilities remain fully functional, Hydra simply proves them more rigorously in a single test.
 
-**Hydra9 Hard Mode and Why It's Brutal**
+-**Hydra9 Hard Mode and Why It's Brutal**
 
 This isn't a conversation, it's 21 isolated messages sent over "30 days."
 
@@ -68,9 +63,8 @@ Each turn is processed in a fresh session:
 - Open a new one days later
 - Type the next
 
-No prior turns are ever visible at inference time to the LLM. Pure isolation.
-
-On the final query, the system sees **nothing** from the previous 20 turns in active context, all context *only* comes from long-term memory retrieval.
+-No prior turns are ever visible at inference time to the LLM. Pure isolation.
+-On the final query, the system sees **nothing** from the previous 20 turns in active context, all context *only* comes from long-term memory retrieval.
 
 It must answer **entirely from long-term memory**:
 - Reconstruct a 9-alias encryption algorithm
@@ -78,7 +72,7 @@ It must answer **entirely from long-term memory**:
 - Identify the one surviving rule
 - Correctly apply it to Project Cerberus (4.85M records/day vs 400k limit)
 
-**The Passing Criteria:**
+-**The Passing Criteria:**
 The system must produce COMPLIANT or NONCOMPLIANT *AND* the following:
     It must fully re-create *all* previous alliases, where they came from, and the causal linkage.
     It must also identify the policy revisions, the constraints on them, and why it arrived at its final decision.
